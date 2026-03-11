@@ -1,0 +1,52 @@
+# Python Dependencies for PA Trading Bot
+
+## Core Data & Analysis
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+## Broker APIs
+oanda-v20>=3.0.0
+python-binance>=1.0.0
+requests>=2.31.0
+
+## Technical Analysis
+ta-lib>=0.4.0
+pandas-ta>=0.3.14
+
+## Database
+sqlalchemy>=2.0.0
+sqlite-utils>=3.30.0
+
+## Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+## Visualization & Reporting
+matplotlib>=3.8.0
+plotly>=5.17.0
+seaborn>=0.13.0
+
+## Utilities
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+pytz>=2023.3
+tqdm>=4.66.0
+
+## Async/Scheduling
+aiohttp>=3.9.0
+APScheduler>=3.10.0
+
+## Development
+black>=23.9.0
+flake8>=6.1.0
+isort>=5.12.0
+mypy>=1.5.0
+pylint>=3.0.0
+
+## Notebooks (Optional)
+jupyter>=1.0.0
+jupyterlab>=4.0.0
+ipykernel>=6.26.0
+ipywidgets>=8.1.0

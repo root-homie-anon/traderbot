@@ -1,0 +1,164 @@
+pa-trading-bot/
+│
+├── .github/
+│   └── workflows/              (CI/CD pipelines - optional, add later)
+│       └── tests.yml
+│
+├── src/
+│   ├── __init__.py
+│   ├── config.py               (Load configuration from config.json or env)
+│   ├── logger.py               (Logging setup)
+│   ├── main.py                 (Bot entry point - modes: backtest, paper, live)
+│   │
+│   ├── data/
+│   │   ├── __init__.py
+│   │   ├── data_loader.py      (Download OHLC from Yahoo Finance, etc)
+│   │   ├── data_cleaner.py     (Validate, clean data)
+│   │   └── database.py         (SQLite interface)
+│   │
+│   ├── analysis/
+│   │   ├── __init__.py
+│   │   ├── price_action.py     (Core PA detection)
+│   │   ├── support_resistance.py (S/R finder with touch counting)
+│   │   ├── market_structure.py  (Classify: Accumulation/Advancing/etc)
+│   │   ├── trend_strength.py    (Candle size analysis)
+│   │   ├── break_of_structure.py (BOS detector)
+│   │   └── confluence.py        (Multi-TF alignment)
+│   │
+│   ├── signals/
+│   │   ├── __init__.py
+│   │   ├── signal_base.py       (Base signal class)
+│   │   ├── reversal_signal.py   (Reversal setup detection)
+│   │   ├── buildup_signal.py    (Build-up breakout detection)
+│   │   ├── pullback_signal.py   (First pullback detection)
+│   │   ├── bos_signal.py        (Break of structure signal)
+│   │   └── quality_scorer.py    (6-factor quality scoring)
+│   │
+│   ├── backtest/
+│   │   ├── __init__.py
+│   │   ├── backtester.py        (Simulate trades on historical data)
+│   │   ├── metrics.py           (Calculate win rate, Sharpe, etc)
+│   │   ├── optimizer.py         (Test configurations, find best)
+│   │   └── reporter.py          (Generate backtest reports)
+│   │
+│   ├── learning/
+│   │   ├── __init__.py
+│   │   ├── performance_tracker.py (Track per pair/setup/TF metrics)
+│   │   ├── adaptive_engine.py     (Adjust quality scores)
+│   │   ├── self_corrector.py      (Detect failures, adjust rules)
+│   │   └── pair_selector.py       (Dynamic pair selection)
+│   │
+│   ├── risk/
+│   │   ├── __init__.py
+│   │   ├── position_sizer.py    (Calculate position size)
+│   │   ├── stop_validator.py    (Validate stop placement)
+│   │   ├── daily_limits.py      (Daily loss limit enforcement)
+│   │   └── drawdown_manager.py  (Position size reduction on losses)
+│   │
+│   ├── broker/
+│   │   ├── __init__.py
+│   │   ├── broker_base.py       (Abstract base class)
+│   │   ├── oanda_connector.py   (OANDA API implementation)
+│   │   ├── binance_connector.py (Binance API implementation)
+│   │   ├── order_manager.py     (Place/monitor orders)
+│   │   └── trade_logger.py      (Log all trades to DB)
+│   │
+│   └── utils/
+│       ├── __init__.py
+│       ├── helpers.py           (Utility functions)
+│       ├── validators.py        (Input validation)
+│       └── formatters.py        (Output formatting)
+│
+├── tests/
+│   ├── __init__.py
+│   ├── test_price_action.py    (Test PA detection)
+│   ├── test_signals.py         (Test signal generation)
+│   ├── test_backtest.py        (Test backtesting engine)
+│   ├── test_learning.py        (Test adaptive system)
+│   ├── test_risk.py            (Test risk management)
+│   ├── conftest.py             (Pytest fixtures)
+│   └── fixtures/               (Test data files)
+│       └── sample_ohlc.csv
+│
+├── notebooks/
+│   ├── analysis.ipynb          (EDA, pair analysis)
+│   ├── backtest_results.ipynb  (Backtest visualization)
+│   └── live_metrics.ipynb      (Live trading monitoring)
+│
+├── docs/
+│   ├── PROJECT_OVERVIEW.md     (Complete system architecture)
+│   ├── BROKER_ANALYSIS.md      (Broker comparison)
+│   ├── PAIR_SELECTION.md       (Pair scoring framework)
+│   ├── API_REFERENCE.md        (Code API documentation - to be added)
+│   ├── DEVELOPMENT_LOG.md      (Phase progress tracking)
+│   └── TRADING_JOURNAL.md      (Example trade analysis)
+│
+├── data/
+│   ├── config.json             (Configuration - .gitignore this!)
+│   ├── trades.db               (SQLite database - .gitignore this!)
+│   ├── historical/             (Downloaded OHLC data - .gitignore this!)
+│   │   ├── EUR_USD_D.csv
+│   │   ├── GBP_USD_D.csv
+│   │   └── USD_JPY_D.csv
+│   └── backtest_results/       (Backtest outputs - .gitignore this!)
+│       ├── report_20250310.csv
+│       └── metrics_20250310.json
+│
+├── logs/
+│   └── bot.log                 (Bot activity log - .gitignore this!)
+│
+├── .gitignore                  (Files to exclude from git)
+├── .github/
+│   └── workflows/              (CI/CD - optional)
+│
+├── README.md                   (Project overview & quick start)
+├── SETUP.md                    (Installation & configuration)
+├── CONTRIBUTING.md             (Developer guidelines)
+├── CHANGELOG.md                (Version history)
+├── LICENSE                     (MIT License)
+│
+├── requirements.txt            (Python dependencies)
+├── setup.py                    (Installation script)
+├── pytest.ini                  (Pytest configuration)
+├── pyproject.toml              (Python project metadata - optional)
+│
+└── Makefile                    (Common commands - optional)
+    ├── make test               (Run tests)
+    ├── make backtest           (Run backtest)
+    ├── make paper              (Start paper trading)
+    ├── make live               (Start live trading)
+    └── make lint               (Check code style)
+
+
+KEY NOTES:
+═════════
+
+1. .gitignore files:
+   - data/config.json           (API keys, secrets)
+   - data/trades.db             (Database - regenerable)
+   - data/historical/           (Downloaded data - regenerable)
+   - logs/                      (Log files)
+   - __pycache__/               (Python cache)
+   - venv/                      (Virtual environment)
+
+2. Create these directories manually:
+   mkdir -p src/{data,analysis,signals,backtest,learning,risk,broker,utils}
+   mkdir -p tests/fixtures
+   mkdir -p notebooks
+   mkdir -p docs
+   mkdir -p data/{historical,backtest_results}
+   mkdir -p logs
+
+3. Phase 1 will focus on:
+   - src/analysis/              (Core PA detection)
+   - src/signals/               (Entry signals)
+   - tests/                     (Unit tests)
+
+4. Add as needed:
+   - docs/API_REFERENCE.md      (After Phase 1)
+   - .github/workflows/         (After Phase 2, for CI/CD)
+   - notebooks/                 (After Phase 3, for analysis)
+
+5. Python path:
+   - All imports use: from src.module import Component
+   - Or add to sys.path in main.py
