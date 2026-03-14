@@ -1,0 +1,30 @@
+# Secrets & config
+data/config.json
+.env
+
+# Database & generated data
+data/trades.db
+data/historical/
+data/backtest_results/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
