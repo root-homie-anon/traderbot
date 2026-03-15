@@ -15,26 +15,78 @@ def main():
         default="backtest",
         help="Trading mode (default: backtest)",
     )
+    parser.add_argument(
+        "--pairs",
+        nargs="+",
+        default=None,
+        help="Pairs to trade (e.g. EUR_USD GBP_USD)",
+    )
+    parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        default=None,
+        help="Timeframes to scan (e.g. H1 H4)",
+    )
+    parser.add_argument(
+        "--max-trades",
+        type=int,
+        default=3,
+        help="Max simultaneous open trades (default: 3)",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=120,
+        help="Seconds between scan cycles in paper mode (default: 120)",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=0,
+        help="Stop after N cycles, 0 = run forever (default: 0)",
+    )
     args = parser.parse_args()
 
     logger.info(f"Starting bot in {args.mode} mode")
 
     if args.mode == "backtest":
-        from src.data.data_loader import generate_sample_data
-        from src.backtest import run_backtest, BacktestConfig
-        from src.backtest.reporter import format_report, trade_log
-
-        logger.info("Running backtest...")
-        df = generate_sample_data(periods=2000)
-        config = BacktestConfig()
-        result = run_backtest(df, pair="EUR_USD", timeframe="H1", config=config)
-        print(format_report(result["metrics"], result["config"]))
-        print()
-        print(trade_log(result["trades"]))
+        _run_backtest()
     elif args.mode == "paper":
-        logger.info("Paper trading mode - not yet implemented")
+        _run_paper(args)
     elif args.mode == "live":
         logger.info("Live trading mode - not yet implemented")
+
+
+def _run_backtest():
+    from src.data.data_loader import generate_sample_data
+    from src.backtest import run_backtest, BacktestConfig
+    from src.backtest.reporter import format_report, trade_log
+
+    logger.info("Running backtest...")
+    df = generate_sample_data(periods=2000)
+    config = BacktestConfig()
+    result = run_backtest(df, pair="EUR_USD", timeframe="H1", config=config)
+    print(format_report(result["metrics"], result["config"]))
+    print()
+    print(trade_log(result["trades"]))
+
+
+def _run_paper(args):
+    from src.paper_trader import PaperTrader, PaperTraderConfig
+
+    config = PaperTraderConfig(
+        max_open_trades=args.max_trades,
+        poll_interval=args.poll_interval,
+        max_cycles=args.max_cycles,
+    )
+
+    if args.pairs:
+        config.pairs = args.pairs
+    if args.timeframes:
+        config.timeframes = args.timeframes
+
+    trader = PaperTrader(config=config)
+    trader.start()
 
 
 if __name__ == "__main__":
