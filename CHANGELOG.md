@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.5.0] - 2026-03-20
+
+### Paper Trading Live Testing
+
+#### Fixed
+- JPY pair price precision — orders were rejected because OANDA requires 3 decimal places for JPY pairs, not 5
+- Duplicate trade protection — only one open trade per pair allowed (was stacking identical positions)
+- Learning system not recording — `_check_closed_trades()` was a stub; now fully wired to performance DB
+
+#### Added
+- Early take-profit at 50% of target — closes trades when price reaches halfway to TP
+- Broker trade backfill on startup — picks up existing open trades so early TP and learning work across restarts
+- Signal metadata tracking — stores signal type, timeframe, quality score with each order for learning
+- Deferred pair selection — uses all configured pairs until enough performance data is collected
+
+#### Changed
+- Pair selector no longer overrides configured pairs when it has no data
+- Price formatting is now instrument-aware (`_fmt_price` / `_price_precision`)
+
+---
+
 ## [0.4.0] - 2026-03-15
 
 ### Phase 3: Paper Trading + Phase 4: Learning System
@@ -74,11 +95,12 @@ All notable changes to this project will be documented in this file.
 
 ## TODO
 
-- [ ] OANDA practice account setup and 200+ paper trades
+- [x] OANDA practice account setup — actively paper trading
+- [ ] Collect 200+ paper trades to validate strategy
 - [ ] Binance connector for crypto pairs
 - [ ] Phase 5: Live trading mode
 - [ ] Monitoring dashboard / alerts
 
 ---
 
-**Last Updated:** March 15, 2026
+**Last Updated:** March 20, 2026

@@ -71,15 +71,13 @@ class OrderManager:
         if len(self.open_orders) >= self.max_open_trades:
             return OrderResult(success=False, reason="max open trades reached")
 
-        # Check for conflicting trades
+        # Check for existing or conflicting trades on the same pair
         for order in self.open_orders.values():
             if order.pair == signal.pair:
-                side = OrderSide.BUY if signal.direction == SignalDirection.BUY else OrderSide.SELL
-                if order.side != side:
-                    return OrderResult(
-                        success=False,
-                        reason=f"conflicting trade on {signal.pair}",
-                    )
+                return OrderResult(
+                    success=False,
+                    reason=f"already have open trade on {signal.pair}",
+                )
 
         # Position sizing
         risk_mult = (

@@ -31,6 +31,21 @@ TIMEFRAME_MAP = {
     "H1": "H1", "H4": "H4", "D": "D", "W": "W", "MN": "M",
 }
 
+# OANDA price precision per instrument (decimal places)
+# JPY pairs use 3 decimals, most others use 5
+JPY_PAIRS = {"USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY"}
+
+
+def _price_precision(pair: str) -> int:
+    """Return the number of decimal places allowed for the instrument."""
+    return 3 if pair in JPY_PAIRS else 5
+
+
+def _fmt_price(price: float, pair: str) -> str:
+    """Format a price to the instrument's required precision."""
+    prec = _price_precision(pair)
+    return f"{price:.{prec}f}"
+
 
 class OandaConnector(BrokerBase):
     """OANDA v20 REST API connector.
@@ -172,12 +187,12 @@ class OandaConnector(BrokerBase):
         }
 
         if order_type == OrderType.LIMIT and price > 0:
-            order_body["price"] = f"{price:.5f}"
+            order_body["price"] = _fmt_price(price, pair)
 
         if stop_loss > 0:
-            order_body["stopLossOnFill"] = {"price": f"{stop_loss:.5f}"}
+            order_body["stopLossOnFill"] = {"price": _fmt_price(stop_loss, pair)}
         if take_profit > 0:
-            order_body["takeProfitOnFill"] = {"price": f"{take_profit:.5f}"}
+            order_body["takeProfitOnFill"] = {"price": _fmt_price(take_profit, pair)}
 
         try:
             resp = self._request(

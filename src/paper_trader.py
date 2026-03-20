@@ -114,6 +114,8 @@ class PaperTrader:
 
         self.state = PaperTraderState()
         self._running = False
+        # Map order_id -> signal metadata for recording closed trades
+        self._signal_meta: dict[str, dict] = {}
 
     def start(self) -> None:
         """Connect and run the paper trading loop."""
@@ -146,6 +148,28 @@ class PaperTrader:
         self.pair_selector = PairSelector(
             self.perf_tracker, max_pairs=TOP_PAIRS
         ) if self.config.auto_pair_selection else None
+
+        # Backfill signal metadata for trades already open at the broker
+        # so early TP and learning can track them
+        try:
+            existing = self.connector.get_open_trades()
+            for t in existing:
+                self._signal_meta[t.order_id] = {
+                    "signal_type": "unknown",
+                    "timeframe": "H1",
+                    "quality_score": 0,
+                    "confluence_level": 0,
+                    "entry_price": t.fill_price,
+                    "stop_loss": t.stop_loss,
+                    "take_profit": t.take_profit,
+                    "direction": t.side.value,
+                    "pair": t.pair,
+                }
+                self.order_mgr.open_orders[t.order_id] = t
+            if existing:
+                logger.info("Picked up %d existing trades from broker", len(existing))
+        except Exception as e:
+            logger.warning("Failed to backfill existing trades: %s", e)
 
         self._running = True
         logger.info(
@@ -196,9 +220,11 @@ class PaperTrader:
                 self.order_mgr.reset_daily()
             logger.info("--- New trading day: %s ---", today)
 
-        # Sync open trades with broker
-        self.order_mgr.sync_open_trades()
+        # Sync open trades and record any that closed
         self._check_closed_trades()
+
+        # Close trades that have reached 50% of their TP target
+        self._check_partial_profit()
 
         # Run learning corrections periodically
         if self.config.use_learning and self.state.cycles % 10 == 0:
@@ -280,6 +306,17 @@ class PaperTrader:
         if result.success:
             self.state.orders_placed += 1
             self.trade_logger.log_order(result.order, event="placed")
+            self._signal_meta[result.order.order_id] = {
+                "signal_type": signal.signal_type.value,
+                "timeframe": signal.timeframe,
+                "quality_score": signal.quality_score,
+                "confluence_level": getattr(signal, "confluence_level", 0),
+                "entry_price": signal.entry_price,
+                "stop_loss": signal.stop_loss,
+                "take_profit": signal.take_profit,
+                "direction": signal.direction.value,
+                "pair": signal.pair,
+            }
             logger.info(
                 "ORDER PLACED: %s %s %s | entry=%.5f sl=%.5f tp=%.5f | QS=%.1f",
                 signal.direction.value.upper(),
@@ -296,17 +333,155 @@ class PaperTrader:
 
     def _check_closed_trades(self) -> None:
         """Detect trades closed by SL/TP since last sync and record them."""
-        # OrderManager.sync_open_trades() already handles removing closed trades
-        # and updating balance. We need to get the last known trades from
-        # the trade logger and check for newly closed ones.
-        pass
+        # Snapshot order IDs before sync
+        prev_ids = set(self.order_mgr.open_orders.keys())
+
+        # sync_open_trades removes orders that are no longer open at the broker
+        self.order_mgr.sync_open_trades()
+
+        # Detect which orders disappeared (closed by SL/TP)
+        current_ids = set(self.order_mgr.open_orders.keys())
+        closed_ids = prev_ids - current_ids
+
+        for oid in closed_ids:
+            self.state.trades_closed += 1
+            meta = self._signal_meta.pop(oid, None)
+            if not meta:
+                logger.info("Trade %s closed (no signal metadata)", oid)
+                continue
+
+            # Fetch actual close details from OANDA transaction history
+            try:
+                trades_resp = self.connector._request(
+                    "GET",
+                    f"/v3/accounts/{self.connector.account_id}/trades/{oid}",
+                )
+                trade_data = trades_resp.get("trade", {})
+                realized_pnl = float(trade_data.get("realizedPL", 0))
+                exit_price = float(trade_data.get("averageClosePrice", 0))
+            except Exception:
+                realized_pnl = 0.0
+                exit_price = 0.0
+
+            self.state.total_pnl += realized_pnl
+
+            # Determine exit reason
+            if exit_price > 0 and meta["stop_loss"] > 0 and meta["take_profit"] > 0:
+                sl_dist = abs(exit_price - meta["stop_loss"])
+                tp_dist = abs(exit_price - meta["take_profit"])
+                exit_reason = "stop_loss" if sl_dist < tp_dist else "take_profit"
+            else:
+                exit_reason = "closed"
+
+            risk_amount = abs(meta["entry_price"] - meta["stop_loss"]) * 1  # per unit
+
+            # Record to performance tracker for learning
+            self.perf_tracker.record_trade({
+                "timestamp": datetime.now().isoformat(),
+                "pair": meta["pair"],
+                "signal_type": meta["signal_type"],
+                "timeframe": meta["timeframe"],
+                "direction": meta["direction"],
+                "entry_price": meta["entry_price"],
+                "exit_price": exit_price,
+                "stop_loss": meta["stop_loss"],
+                "take_profit": meta["take_profit"],
+                "pnl": realized_pnl,
+                "risk_amount": risk_amount,
+                "exit_reason": exit_reason,
+                "quality_score": meta["quality_score"],
+                "confluence_level": meta["confluence_level"],
+            }, source="paper")
+
+            # Log to trade logger
+            from src.broker.broker_base import Order, OrderSide, OrderType, OrderStatus
+            closed_order = Order(
+                order_id=oid,
+                pair=meta["pair"],
+                side=OrderSide.BUY if meta["direction"] == "buy" else OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                units=0,
+                fill_price=exit_price,
+                stop_loss=meta["stop_loss"],
+                take_profit=meta["take_profit"],
+                status=OrderStatus.FILLED,
+                pnl=realized_pnl,
+            )
+            self.trade_logger.log_order(closed_order, event="closed")
+
+            logger.info(
+                "TRADE CLOSED: %s %s | exit=%.5f | PnL=%.2f | reason=%s",
+                meta["direction"].upper(), meta["pair"],
+                exit_price, realized_pnl, exit_reason,
+            )
+
+    def _check_partial_profit(self) -> None:
+        """Close trades that have reached 50% of their TP target."""
+        # Batch-fetch current prices for all pairs with open trades
+        open_pairs = {meta["pair"] for meta in self._signal_meta.values()}
+        if not open_pairs:
+            return
+        current_prices = {}
+        try:
+            resp = self.connector._request(
+                "GET",
+                f"/v3/accounts/{self.connector.account_id}/pricing",
+                params={"instruments": ",".join(open_pairs)},
+            )
+            for p in resp.get("prices", []):
+                bid = float(p["bids"][0]["price"])
+                ask = float(p["asks"][0]["price"])
+                current_prices[p["instrument"]] = (bid + ask) / 2
+        except Exception as e:
+            logger.debug("Failed to fetch prices for early TP check: %s", e)
+            return
+
+        for oid, order in list(self.order_mgr.open_orders.items()):
+            meta = self._signal_meta.get(oid)
+            if not meta:
+                continue
+
+            entry = meta["entry_price"]
+            tp = meta["take_profit"]
+            direction = meta["direction"]
+
+            current_price = current_prices.get(meta["pair"])
+            if not current_price:
+                continue
+
+            # Calculate 50% target price
+            tp_distance = tp - entry  # positive for buy, negative for sell
+            half_tp = entry + tp_distance * 0.5
+
+            hit_target = False
+            if direction == "buy" and current_price >= half_tp:
+                hit_target = True
+            elif direction == "sell" and current_price <= half_tp:
+                hit_target = True
+
+            if hit_target:
+                logger.info(
+                    "EARLY TP: %s %s reached 50%% of target (%.5f / %.5f) — closing",
+                    direction.upper(), order.pair, current_price, tp,
+                )
+                try:
+                    self.order_mgr.close_order(oid)
+                except Exception as e:
+                    logger.error("Failed to close %s for early TP: %s", oid, e)
 
     def _get_active_pairs(self) -> list[str]:
-        """Get the list of pairs to scan this cycle."""
+        """Get the list of pairs to scan this cycle.
+
+        Uses configured pairs until the learning system has enough data,
+        then switches to performance-based selection.
+        """
         if self.pair_selector and self.config.auto_pair_selection:
-            selected = self.pair_selector.select(source="paper")
-            if selected:
-                return selected
+            # Only use adaptive selection once we have enough data
+            stats = self.perf_tracker.get_stats(source="paper")
+            if stats.total_trades >= self.pair_selector.min_trades * 2:
+                selected = self.pair_selector.select(source="paper")
+                if selected:
+                    return selected
         return self.config.pairs
 
     def _get_enabled_signal_types(self) -> list[str]:

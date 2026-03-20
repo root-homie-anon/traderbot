@@ -4,7 +4,7 @@ Automated trading bot using multi-timeframe price action analysis. Backtests on 
 
 **Goal:** Start with $300, scale to $250+/day through systematic price action trading.
 
-**Status:** Phases 1-4 complete. Paper trading engine ready — just needs OANDA API credentials to go live.
+**Status:** Testing — actively paper trading on OANDA practice account. Collecting data to validate strategy before going live.
 
 ---
 
@@ -54,8 +54,8 @@ src/
 |-------|--------|-------------|
 | 1. Strategy Engine | Done | Price action detection, S/R, market structure, signal generation, quality scoring |
 | 2. Backtesting | Done | Walk-forward simulation, metrics (Sharpe/PF/DD), parameter optimizer, risk management |
-| 3. Paper Trading | Done | OANDA connector, order manager, paper trading engine with adaptive scoring |
-| 4. Learning System | Done | Performance tracking, adaptive score adjustment, self-correction, pair selection |
+| 3. Paper Trading | Testing | OANDA connector, order manager, paper trading engine with adaptive scoring |
+| 4. Learning System | Testing | Performance tracking, adaptive score adjustment, self-correction, pair selection |
 | 5. Live Trading | TODO | Switch from practice to live OANDA account |
 
 ---
@@ -178,7 +178,7 @@ python3 -m pytest tests/ -v
 
 ## TODO
 
-- [ ] Set up OANDA practice account and configure API credentials
+- [x] Set up OANDA practice account and configure API credentials
 - [ ] Run 200+ paper trades to validate strategy on live data
 - [ ] Compare paper trading metrics against backtest results
 - [ ] Implement Binance connector for crypto pairs
@@ -193,4 +193,4 @@ This bot trades real money and can lose. Run 200+ paper trades before going live
 
 ---
 
-**Last Updated:** March 15, 2026
+**Last Updated:** March 20, 2026
