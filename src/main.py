@@ -58,14 +58,29 @@ def main():
 
 
 def _run_backtest():
-    from src.data.data_loader import generate_sample_data
+    from src.data.data_loader import generate_sample_data, load_pair
     from src.backtest import run_backtest, BacktestConfig
     from src.backtest.reporter import format_report, trade_log
 
+    pair = "EUR_USD"
+    timeframe = "H1"
+
     logger.info("Running backtest...")
-    df = generate_sample_data(periods=2000)
+
+    try:
+        df = load_pair(pair, timeframe)
+        logger.info("Loaded real historical data: %d bars", len(df))
+    except FileNotFoundError:
+        logger.warning(
+            "No historical CSV found for %s %s — falling back to synthetic data. "
+            "Run `python3 -m src.data.run_fetch` to download real data.",
+            pair,
+            timeframe,
+        )
+        df = generate_sample_data(periods=2000)
+
     config = BacktestConfig()
-    result = run_backtest(df, pair="EUR_USD", timeframe="H1", config=config)
+    result = run_backtest(df, pair=pair, timeframe=timeframe, config=config)
     print(format_report(result["metrics"], result["config"]))
     print()
     print(trade_log(result["trades"]))

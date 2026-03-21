@@ -2,7 +2,7 @@
 .env
 
 # Live data directory (SQLite databases, historical data, backtest results)
-data/
+/data/
 
 # Catch-all for any .db files outside data/
 *.db
