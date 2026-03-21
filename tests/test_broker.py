@@ -76,6 +76,12 @@ class FakeBroker(BrokerBase):
 
 
 def _make_signal(pair="EUR_USD", direction=SignalDirection.BUY):
+    if direction == SignalDirection.BUY:
+        stop_loss = 1.09800
+        take_profit = 1.10400
+    else:
+        stop_loss = 1.10200
+        take_profit = 1.09600
     return Signal(
         signal_type=SignalType.REVERSAL,
         direction=direction,
@@ -83,8 +89,8 @@ def _make_signal(pair="EUR_USD", direction=SignalDirection.BUY):
         timeframe="H1",
         timestamp=pd.Timestamp("2026-01-01"),
         entry_price=1.10000,
-        stop_loss=1.09800,
-        take_profit=1.10400,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
         quality_score=70,
         confluence_level=3,
         confidence=65,

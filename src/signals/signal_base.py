@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import pandas as pd
 
+from src.utils.helpers import get_pip_value
+
 
 class SignalDirection(Enum):
     BUY = "buy"
@@ -41,8 +43,8 @@ class Signal:
 
     @property
     def risk_pips(self) -> float:
-        """Distance from entry to stop in pips (assumes forex 4/5 digit)."""
-        return abs(self.entry_price - self.stop_loss) * 10000
+        """Distance from entry to stop in pips, derived from the signal's pair."""
+        return abs(self.entry_price - self.stop_loss) / get_pip_value(self.pair)
 
     def to_dict(self) -> dict:
         return {

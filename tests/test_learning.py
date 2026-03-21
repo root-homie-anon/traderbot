@@ -39,12 +39,19 @@ def tracker(tmp_path):
 
 @pytest.fixture
 def loaded_tracker(tracker):
-    """Tracker with 20 trades: 12 wins, 8 losses (60% WR) on EUR_USD reversal."""
+    """Tracker with 20 trades: 13 wins, 7 losses (65% WR) on EUR_USD reversal.
+
+    Interleaved to avoid triggering consecutive loss detection.
+    Ends on wins so recency-weighted WR stays above STRONG_WIN_RATE (0.60).
+    """
+    # 13 wins (2.0) and 7 losses (-1.0), interleaved
+    # L W W L W W L W W L W W L W W L W W W W
+    pattern = [-1.0, 2.0, 2.0, -1.0, 2.0, 2.0, -1.0, 2.0, 2.0, -1.0,
+               2.0, 2.0, -1.0, 2.0, 2.0, -1.0, 2.0, 2.0, -1.0, 2.0]
     trades = []
-    for i in range(12):
-        trades.append(_make_trade(pnl=2.0, risk_amount=1.0))
-    for i in range(8):
-        trades.append(_make_trade(pnl=-1.0, risk_amount=1.0, exit_reason="stop_loss"))
+    for pnl in pattern:
+        reason = "take_profit" if pnl > 0 else "stop_loss"
+        trades.append(_make_trade(pnl=pnl, risk_amount=1.0, exit_reason=reason))
     tracker.record_trades(trades)
     return tracker
 
@@ -101,7 +108,7 @@ class TestPerformanceTracker:
 
     def test_get_win_rate(self, loaded_tracker):
         wr = loaded_tracker.get_win_rate()
-        assert wr == pytest.approx(0.6)
+        assert wr == pytest.approx(0.65)
 
     def test_get_all_pairs(self, tracker):
         tracker.record_trade(_make_trade(pair="EUR_USD"))

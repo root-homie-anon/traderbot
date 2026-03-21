@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 # Optimal trading windows per pair (UTC hours).
 # Tuple format: (start_hour, end_hour). When start > end, wraps midnight.
 OPTIMAL_WINDOWS: dict[str, list[tuple[int, int]]] = {
-    "EUR_USD": [(7, 16)],           # London + London-NY overlap
-    "GBP_USD": [(7, 16)],           # London + London-NY overlap
-    "USD_JPY": [(0, 9), (12, 16)],  # Tokyo + London-NY overlap
-    "AUD_USD": [(0, 9)],            # Sydney + Tokyo
+    "EUR_USD": [(7, 17)],           # London + London-NY overlap (extended to capture full NY overlap)
+    "GBP_USD": [(7, 17)],           # London + London-NY overlap (extended to capture full NY overlap)
+    "USD_JPY": [(0, 9), (12, 17)],  # Tokyo + London-NY overlap (extended)
+    "AUD_USD": [(22, 9)],           # Sydney open (22:00 UTC) + Tokyo (wraps midnight)
     "EUR_GBP": [(7, 16)],           # London session only
-    "USD_CAD": [(12, 20)],          # NY session
+    "USD_CAD": [(12, 21)],          # NY session (extended to session close)
     "NZD_USD": [(21, 6)],           # Sydney/Tokyo (wraps midnight)
     "EUR_JPY": [(7, 16)],           # London (Tokyo-London overlap + London)
     "GBP_JPY": [(7, 16)],           # London (Tokyo-London overlap + London)
@@ -90,14 +90,15 @@ def get_session_name(utc_now: datetime | None = None) -> str:
         utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
 
-    if 7 <= hour < 16:
-        if 12 <= hour < 16:
-            return "London-NY Overlap"
+    # Check most specific/narrow sessions first to avoid overlap masking
+    if 12 <= hour < 16:
+        return "London-NY Overlap"
+    if 7 <= hour < 12:
         return "London"
-    elif 12 <= hour < 21:
+    if 16 <= hour < 21:
         return "New York"
-    elif hour >= 21 or hour < 6:
+    if hour >= 21:
         return "Sydney"
-    elif 0 <= hour < 9:
+    if 0 <= hour < 9:
         return "Tokyo"
     return "Transition"

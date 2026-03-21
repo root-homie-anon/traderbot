@@ -1,6 +1,9 @@
 """Position size reduction on consecutive losses / large drawdowns."""
 
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger("pa_bot")
 
 
 @dataclass
@@ -22,14 +25,24 @@ class DrawdownManager:
     def risk_multiplier(self) -> float:
         """Get position size multiplier based on drawdown state.
 
-        Returns a value between 0.25 and 1.0:
+        Returns a value between 0.0 and 1.0:
         - 1.0: no drawdown or minor drawdown
         - 0.75: moderate drawdown (5-10%)
         - 0.50: significant drawdown (10-20%)
-        - 0.25: severe drawdown (20%+) or 4+ consecutive losses
+        - 0.25: 4+ consecutive losses
+        - 0.0: hard halt — drawdown at or beyond 20% (no trading)
         """
         dd = self.drawdown_pct
         cl = self.consecutive_losses
+
+        # Hard halt: 20% drawdown means no new positions
+        if dd >= 0.20:
+            logger.critical(
+                "HARD DRAWDOWN HALT: drawdown %.1f%% has reached or exceeded 20%% threshold — "
+                "position size multiplier set to 0.0, no new trades permitted",
+                dd * 100,
+            )
+            return 0.0
 
         # Consecutive loss reduction
         if cl >= 4:
@@ -38,8 +51,6 @@ class DrawdownManager:
             return 0.50
 
         # Drawdown-based reduction
-        if dd >= 0.20:
-            return 0.25
         if dd >= 0.10:
             return 0.50
         if dd >= 0.05:

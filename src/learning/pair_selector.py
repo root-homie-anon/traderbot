@@ -38,8 +38,8 @@ class PairSelector:
         self,
         tracker: PerformanceTracker,
         max_pairs: int = TOP_PAIRS,
-        min_trades: int = 5,
-        min_win_rate: float = 0.35,
+        min_trades: int = 20,
+        min_win_rate: float = 0.45,
         default_pairs: list[str] | None = None,
     ):
         self.tracker = tracker
@@ -54,12 +54,16 @@ class PairSelector:
         self,
         source: str | None = None,
         last_n: int | None = None,
+        session: str | None = None,
     ) -> list[str]:
         """Return the top pairs to trade, sorted by expectancy.
 
-        Falls back to default_pairs if insufficient data.
+        When ``session`` is provided, ranks pairs using only trades from that
+        session.  Falls back to global stats if session-specific data has fewer
+        than ``min_trades`` qualifying pairs.  Falls back to ``default_pairs``
+        if no pairs meet the selection criteria at all.
         """
-        rankings = self.rank(source=source, last_n=last_n)
+        rankings = self.rank(source=source, last_n=last_n, session=session)
         selected = [r.pair for r in rankings if r.selected]
 
         if not selected:
@@ -72,11 +76,28 @@ class PairSelector:
         self,
         source: str | None = None,
         last_n: int | None = None,
+        session: str | None = None,
     ) -> list[PairRanking]:
-        """Rank all pairs and mark which are selected."""
+        """Rank all pairs and mark which are selected.
+
+        When ``session`` is provided, ranking uses session-scoped stats.  If
+        fewer than ``min_trades`` qualifying pairs exist in that session, the
+        method falls back transparently to global stats so selection is never
+        left empty due to insufficient session data.
+        """
         stats_list = self.tracker.get_pair_rankings(
-            source=source, last_n=last_n, min_trades=self.min_trades
+            source=source, last_n=last_n, min_trades=self.min_trades,
+            session=session,
         )
+
+        if session and len(stats_list) < self.min_trades:
+            logger.debug(
+                "Session '%s' has only %d qualifying pair(s) — falling back to global stats",
+                session, len(stats_list),
+            )
+            stats_list = self.tracker.get_pair_rankings(
+                source=source, last_n=last_n, min_trades=self.min_trades,
+            )
 
         # Filter out pairs below min win rate
         eligible = [s for s in stats_list if s.win_rate >= self.min_win_rate]

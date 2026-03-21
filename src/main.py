@@ -1,10 +1,23 @@
 """Bot entry point - modes: backtest, paper, live."""
 
 import argparse
+import signal
 
 from src.logger import setup_logger
 
 logger = setup_logger()
+
+_shutdown_requested = False
+
+
+def _handle_signal(signum: int, frame) -> None:  # type: ignore[type-arg]
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info("Shutdown signal received (%s) — stopping after current cycle", signum)
+
+
+signal.signal(signal.SIGTERM, _handle_signal)
+signal.signal(signal.SIGINT, _handle_signal)
 
 
 def main():
@@ -58,14 +71,29 @@ def main():
 
 
 def _run_backtest():
-    from src.data.data_loader import generate_sample_data
+    from src.data.data_loader import generate_sample_data, load_pair
     from src.backtest import run_backtest, BacktestConfig
     from src.backtest.reporter import format_report, trade_log
 
+    pair = "EUR_USD"
+    timeframe = "H1"
+
     logger.info("Running backtest...")
-    df = generate_sample_data(periods=2000)
+
+    try:
+        df = load_pair(pair, timeframe)
+        logger.info("Loaded real historical data: %d bars", len(df))
+    except FileNotFoundError:
+        logger.warning(
+            "No historical CSV found for %s %s — falling back to synthetic data. "
+            "Run `python3 -m src.data.run_fetch` to download real data.",
+            pair,
+            timeframe,
+        )
+        df = generate_sample_data(periods=2000)
+
     config = BacktestConfig()
-    result = run_backtest(df, pair="EUR_USD", timeframe="H1", config=config)
+    result = run_backtest(df, pair=pair, timeframe=timeframe, config=config)
     print(format_report(result["metrics"], result["config"]))
     print()
     print(trade_log(result["trades"]))
@@ -86,7 +114,14 @@ def _run_paper(args):
         config.timeframes = args.timeframes
 
     trader = PaperTrader(config=config)
-    trader.start()
+    try:
+        trader.start()
+    except Exception as e:
+        logger.critical("Unhandled exception in paper trader: %s", e, exc_info=True)
+        raise
+    finally:
+        if trader._running:
+            trader._shutdown()
 
 
 if __name__ == "__main__":

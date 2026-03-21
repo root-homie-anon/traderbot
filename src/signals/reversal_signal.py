@@ -6,6 +6,8 @@ A reversal signal occurs when:
 3. Market structure and trend support the reversal direction
 """
 
+import math
+
 import pandas as pd
 
 from src.analysis.price_action import (
@@ -50,6 +52,10 @@ def detect_reversal_signals(
     all_patterns = pin_bars + engulfings + dojis
     if not all_patterns:
         return signals
+
+    # ATR over last 14 bars — used for stop placement on both sides
+    _atr_raw = (df["high"] - df["low"]).rolling(14).mean().iloc[-1]
+    atr: float = float(_atr_raw) if (len(df) >= 14 and not math.isnan(float(_atr_raw))) else float((df["high"] - df["low"]).mean())
 
     # Check for bullish reversal at support
     support = nearest_support(levels, current_price)
@@ -105,7 +111,7 @@ def detect_reversal_signals(
             ]
             if bearish_patterns:
                 best_pattern = max(bearish_patterns, key=lambda p: p.strength)
-                stop_loss = resistance.price + (resistance.price - current_price) * 0.5
+                stop_loss = max(resistance.price, current_price) + atr * 0.3
                 risk = stop_loss - current_price
 
                 support = nearest_support(levels, current_price)

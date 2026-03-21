@@ -9,8 +9,10 @@ Requires environment variables:
     OANDA_ENVIRONMENT - "practice" (default) or "live"
 """
 
+import http.client
 import logging
 import os
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -86,18 +88,29 @@ class OandaConnector(BrokerBase):
         self._session = requests.Session()
         self._session.headers.update(self._headers)
 
-        try:
-            resp = self._request("GET", f"/v3/accounts/{self.account_id}/summary")
-            account = resp.get("account", {})
-            logger.info(
-                "Connected to OANDA — balance: %s %s",
-                account.get("balance"), account.get("currency"),
-            )
-            return True
-        except Exception as e:
-            logger.error("OANDA connection failed: %s", e)
-            self._session = None
-            return False
+        max_attempts = 3
+        delay = 5
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = self._request("GET", f"/v3/accounts/{self.account_id}/summary")
+                account = resp.get("account", {})
+                logger.info(
+                    "Connected to OANDA — balance: %s %s",
+                    account.get("balance"), account.get("currency"),
+                )
+                return True
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "OANDA connect attempt %d/%d failed: %s", attempt, max_attempts, e,
+                )
+                if attempt < max_attempts:
+                    time.sleep(delay)
+
+        logger.error("OANDA connection failed after %d attempts: %s", max_attempts, last_exc)
+        self._session = None
+        return False
 
     def disconnect(self) -> None:
         if self._session:
@@ -314,16 +327,46 @@ class OandaConnector(BrokerBase):
         return ask - bid
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
-        """Make an authenticated request to OANDA API."""
+        """Make an authenticated request to OANDA API with retry on transient errors."""
+        _retryable = (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            http.client.RemoteDisconnected,
+        )
+
         session = self._session or requests.Session()
         if not self._session:
             session.headers.update(self._headers)
 
         url = f"{self.base_url}{path}"
-        resp = session.request(method, url, timeout=30, **kwargs)
+        last_exc: Exception | None = None
 
-        if resp.status_code >= 400:
-            logger.error("OANDA API error %d: %s", resp.status_code, resp.text)
-            resp.raise_for_status()
+        for attempt, delay in enumerate([0, 1, 2], start=1):
+            if delay:
+                time.sleep(delay)
+            try:
+                resp = session.request(method, url, timeout=30, **kwargs)
 
-        return resp.json()
+                if resp.status_code >= 400:
+                    logger.error("OANDA API error %d: %s", resp.status_code, resp.text)
+                    resp.raise_for_status()
+
+                try:
+                    return resp.json()
+                except Exception as json_exc:
+                    logger.error(
+                        "OANDA JSON parse error — raw response: %r", resp.text[:500]
+                    )
+                    raise json_exc
+
+            except _retryable as e:
+                last_exc = e
+                logger.warning(
+                    "OANDA request transient error (attempt %d/3): %s", attempt, e,
+                )
+                if attempt == 3:
+                    raise
+
+        # Unreachable — loop always raises on final attempt, but satisfies type checker
+        raise last_exc  # type: ignore[misc]
