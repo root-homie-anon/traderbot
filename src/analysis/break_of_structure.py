@@ -30,7 +30,7 @@ def detect_bos(
     df: pd.DataFrame,
     pivot_left: int = 5,
     pivot_right: int = 5,
-    confirmation_bars: int = 1,
+    confirmation_bars: int = 2,
 ) -> list[BOSEvent]:
     """Detect Break of Structure events.
 
@@ -39,6 +39,7 @@ def detect_bos(
 
     Args:
         confirmation_bars: number of bars that must close beyond the level
+                           (1 = break bar only, 2 = break bar + 1 confirmation)
     """
     swing_highs, swing_lows = find_pivots(df, pivot_left, pivot_right)
     events = []

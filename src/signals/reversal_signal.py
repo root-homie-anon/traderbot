@@ -15,6 +15,7 @@ from src.analysis.price_action import (
 from src.analysis.support_resistance import (
     find_support_resistance, nearest_support, nearest_resistance,
 )
+from src.analysis.confluence import calculate_confluence
 from src.signals.signal_base import Signal, SignalDirection, SignalType
 
 
@@ -73,6 +74,7 @@ def detect_reversal_signals(
 
                 rr = (take_profit - current_price) / risk if risk > 0 else 0
                 if rr >= min_rr:
+                    confluence = calculate_confluence(df, direction="bullish")
                     signals.append(Signal(
                         signal_type=SignalType.REVERSAL,
                         direction=SignalDirection.BUY,
@@ -83,7 +85,7 @@ def detect_reversal_signals(
                         stop_loss=stop_loss,
                         take_profit=take_profit,
                         quality_score=best_pattern.strength,
-                        confluence_level=0,
+                        confluence_level=confluence.score,
                         confidence=best_pattern.strength * 0.7 + support.strength * 0.3,
                         reasons=[
                             f"Bullish {best_pattern.type.value} at support {support.price:.5f}",
@@ -114,6 +116,7 @@ def detect_reversal_signals(
 
                 rr = (current_price - take_profit) / risk if risk > 0 else 0
                 if rr >= min_rr:
+                    confluence = calculate_confluence(df, direction="bearish")
                     signals.append(Signal(
                         signal_type=SignalType.REVERSAL,
                         direction=SignalDirection.SELL,
@@ -124,7 +127,7 @@ def detect_reversal_signals(
                         stop_loss=stop_loss,
                         take_profit=take_profit,
                         quality_score=best_pattern.strength,
-                        confluence_level=0,
+                        confluence_level=confluence.score,
                         confidence=best_pattern.strength * 0.7 + resistance.strength * 0.3,
                         reasons=[
                             f"Bearish {best_pattern.type.value} at resistance {resistance.price:.5f}",

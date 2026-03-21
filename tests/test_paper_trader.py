@@ -148,6 +148,7 @@ class TestPaperTrader:
             poll_interval=0,
             min_quality_score=30,  # lower threshold so test signals pass
             use_learning=False,
+            use_session_filter=False,
         )
         return PaperTrader(config=config, connector=mock_connector)
 
@@ -185,6 +186,7 @@ class TestPaperTrader:
             max_cycles=1,
             poll_interval=0,
             use_learning=False,
+            use_session_filter=False,
         )
         trader = PaperTrader(config=config, connector=mock_connector)
         trader.start()
@@ -199,6 +201,7 @@ class TestPaperTrader:
             poll_interval=0,
             use_learning=True,
             auto_pair_selection=False,
+            use_session_filter=False,
         )
         trader = PaperTrader(config=config, connector=mock_connector)
         trader.start()
@@ -210,6 +213,7 @@ class TestPaperTrader:
             max_cycles=0,  # would run forever
             poll_interval=0,
             use_learning=False,
+            use_session_filter=False,
         )
         trader = PaperTrader(config=config, connector=mock_connector)
         # Stop immediately via max_cycles override

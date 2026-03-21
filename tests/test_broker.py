@@ -141,13 +141,13 @@ class TestOrderManager:
         assert not result.success
         assert "max open trades" in result.reason
 
-    def test_conflicting_trade(self):
+    def test_duplicate_pair_blocked(self):
         broker = FakeBroker()
         mgr = OrderManager(broker, account_balance=300, max_open_trades=5)
         mgr.submit_signal(_make_signal(pair="EUR_USD", direction=SignalDirection.BUY))
         result = mgr.submit_signal(_make_signal(pair="EUR_USD", direction=SignalDirection.SELL))
         assert not result.success
-        assert "conflicting" in result.reason
+        assert "already have open trade" in result.reason
 
     def test_daily_limit_blocks(self):
         broker = FakeBroker()

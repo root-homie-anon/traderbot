@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.analysis.break_of_structure import detect_bos, BOSType
 from src.analysis.trend_strength import calculate_trend_strength
+from src.analysis.confluence import calculate_confluence
 from src.signals.signal_base import Signal, SignalDirection, SignalType
 
 
@@ -55,6 +56,7 @@ def detect_bos_signals(
             take_profit = current_price + risk * min_rr
             trend_bonus = 20 if trend.direction == "bullish" else 0
 
+            confluence = calculate_confluence(df, direction="bullish")
             signals.append(Signal(
                 signal_type=SignalType.BOS,
                 direction=SignalDirection.BUY,
@@ -65,7 +67,7 @@ def detect_bos_signals(
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 quality_score=min(100, event.strength + trend_bonus),
-                confluence_level=0,
+                confluence_level=confluence.score,
                 confidence=min(100, event.strength * 0.6 + trend.score * 0.4),
                 reasons=[
                     f"Bullish BOS: broke above {event.broken_level:.5f}",
@@ -84,6 +86,7 @@ def detect_bos_signals(
             take_profit = current_price - risk * min_rr
             trend_bonus = 20 if trend.direction == "bearish" else 0
 
+            confluence = calculate_confluence(df, direction="bearish")
             signals.append(Signal(
                 signal_type=SignalType.BOS,
                 direction=SignalDirection.SELL,
@@ -94,7 +97,7 @@ def detect_bos_signals(
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 quality_score=min(100, event.strength + trend_bonus),
-                confluence_level=0,
+                confluence_level=confluence.score,
                 confidence=min(100, event.strength * 0.6 + trend.score * 0.4),
                 reasons=[
                     f"Bearish BOS: broke below {event.broken_level:.5f}",

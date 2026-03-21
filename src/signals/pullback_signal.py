@@ -11,6 +11,7 @@ import numpy as np
 
 from src.analysis.price_action import detect_pin_bars, detect_engulfing, Direction
 from src.analysis.trend_strength import calculate_trend_strength
+from src.analysis.confluence import calculate_confluence
 from src.signals.signal_base import Signal, SignalDirection, SignalType
 
 
@@ -80,6 +81,7 @@ def detect_pullback_signals(
 
                 rr = (take_profit - current_price) / risk if risk > 0 else 0
                 if rr >= min_rr:
+                    confluence = calculate_confluence(df, direction="bullish")
                     signals.append(Signal(
                         signal_type=SignalType.PULLBACK,
                         direction=SignalDirection.BUY,
@@ -90,7 +92,7 @@ def detect_pullback_signals(
                         stop_loss=stop_loss,
                         take_profit=take_profit,
                         quality_score=min(100, best.strength + trend.score * 0.5),
-                        confluence_level=0,
+                        confluence_level=confluence.score,
                         confidence=min(100, best.strength * 0.5 + trend.score * 0.5),
                         reasons=[
                             f"Bullish pullback ({retracement:.0%} retracement)",
@@ -134,6 +136,7 @@ def detect_pullback_signals(
 
                 rr = (current_price - take_profit) / risk if risk > 0 else 0
                 if rr >= min_rr:
+                    confluence = calculate_confluence(df, direction="bearish")
                     signals.append(Signal(
                         signal_type=SignalType.PULLBACK,
                         direction=SignalDirection.SELL,
@@ -144,7 +147,7 @@ def detect_pullback_signals(
                         stop_loss=stop_loss,
                         take_profit=take_profit,
                         quality_score=min(100, best.strength + trend.score * 0.5),
-                        confluence_level=0,
+                        confluence_level=confluence.score,
                         confidence=min(100, best.strength * 0.5 + trend.score * 0.5),
                         reasons=[
                             f"Bearish pullback ({retracement:.0%} retracement)",

@@ -10,11 +10,15 @@ from src.signals.reversal_signal import detect_reversal_signals
 from src.signals.pullback_signal import detect_pullback_signals
 from src.signals.buildup_signal import detect_buildup_signals
 from src.signals.bos_signal import detect_bos_signals
+from src.signals.quality_scorer import score_signal
+from src.analysis.confluence import calculate_confluence
+from src.analysis.trend_strength import calculate_trend_strength
+from src.analysis.market_structure import classify_structure
 from src.risk.position_sizer import calculate_position_size
 from src.risk.daily_limits import DailyLimitTracker
 from src.risk.drawdown_manager import DrawdownManager
 from src.backtest.metrics import calculate_metrics, BacktestMetrics
-from src.config import RISK_PER_TRADE, QUALITY_SCORE_MIN
+from src.config import RISK_PER_TRADE, QUALITY_SCORE_MIN, CONFLUENCE_MIN
 
 logger = logging.getLogger("pa_bot")
 
@@ -225,17 +229,41 @@ def _generate_signals(
     timeframe: str,
     config: BacktestConfig,
 ) -> list[Signal]:
-    """Run all enabled signal detectors on the visible data."""
-    signals = []
+    """Run all enabled signal detectors and score with 6-factor quality scorer."""
+    raw_signals = []
     for sig_type in config.signal_types:
         detector = SIGNAL_DETECTORS.get(sig_type)
         if detector:
             try:
                 found = detector(df, pair=pair, timeframe=timeframe, min_rr=config.min_rr)
-                signals.extend(found)
+                raw_signals.extend(found)
             except Exception:
-                pass  # Skip detector errors during backtest
-    return signals
+                pass
+
+    if not raw_signals:
+        return []
+
+    # Score with full quality scorer
+    trend = calculate_trend_strength(df)
+    structure = classify_structure(df)
+    scored = []
+
+    for signal in raw_signals:
+        if signal.confluence_level < CONFLUENCE_MIN:
+            continue
+
+        direction = "bullish" if signal.direction == SignalDirection.BUY else "bearish"
+        confluence = calculate_confluence(df, direction=direction)
+        breakdown = score_signal(
+            signal,
+            confluence=confluence,
+            trend=trend,
+            structure=structure,
+        )
+        signal.quality_score = breakdown.total_score
+        scored.append(signal)
+
+    return scored
 
 
 def _check_exit(trade: Trade, bar: pd.Series) -> tuple[float | None, str]:

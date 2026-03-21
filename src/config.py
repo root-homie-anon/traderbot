@@ -14,9 +14,9 @@ MAX_DAILY_LOSS = 0.10       # 10% of account
 MAX_POSITIONS = None        # Unlimited within risk
 
 # Entry Rules
-CONFLUENCE_MIN = 1          # Min confluence level (1x, 2x, 3x)
+CONFLUENCE_MIN = 2          # Min confluence factors required (0-6)
 TREND_STRENGTH_MIN = 40     # Minimum trend strength (0-100)
-QUALITY_SCORE_MIN = 50      # Minimum quality score (0-100)
+QUALITY_SCORE_MIN = 55      # Minimum quality score (0-100)
 
 # Pair Selection
 TOP_PAIRS = 5               # Trade top 5 pairs

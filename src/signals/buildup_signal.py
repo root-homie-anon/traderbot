@@ -11,6 +11,7 @@ import numpy as np
 
 from src.analysis.price_action import detect_buildup
 from src.analysis.trend_strength import calculate_trend_strength
+from src.analysis.confluence import calculate_confluence
 from src.signals.signal_base import Signal, SignalDirection, SignalType
 
 
@@ -70,6 +71,7 @@ def detect_buildup_signals(
             strength = min(100, latest.strength + (breakout_size / atr) * 30)
             trend_bonus = 20 if trend.direction == "bullish" else 0
 
+            confluence = calculate_confluence(df, direction="bullish")
             signals.append(Signal(
                 signal_type=SignalType.BUILDUP,
                 direction=SignalDirection.BUY,
@@ -80,7 +82,7 @@ def detect_buildup_signals(
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 quality_score=min(100, strength + trend_bonus),
-                confluence_level=0,
+                confluence_level=confluence.score,
                 confidence=min(100, strength + trend_bonus),
                 reasons=[
                     f"Bullish breakout above buildup zone ({zone_low:.5f}-{zone_high:.5f})",
@@ -101,6 +103,7 @@ def detect_buildup_signals(
             strength = min(100, latest.strength + (breakout_size / atr) * 30)
             trend_bonus = 20 if trend.direction == "bearish" else 0
 
+            confluence = calculate_confluence(df, direction="bearish")
             signals.append(Signal(
                 signal_type=SignalType.BUILDUP,
                 direction=SignalDirection.SELL,
@@ -111,7 +114,7 @@ def detect_buildup_signals(
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 quality_score=min(100, strength + trend_bonus),
-                confluence_level=0,
+                confluence_level=confluence.score,
                 confidence=min(100, strength + trend_bonus),
                 reasons=[
                     f"Bearish breakout below buildup zone ({zone_low:.5f}-{zone_high:.5f})",

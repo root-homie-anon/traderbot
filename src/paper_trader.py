@@ -24,9 +24,13 @@ from src.signals.pullback_signal import detect_pullback_signals
 from src.signals.buildup_signal import detect_buildup_signals
 from src.signals.bos_signal import detect_bos_signals
 from src.signals.quality_scorer import score_signal
+from src.analysis.confluence import calculate_confluence
+from src.analysis.trend_strength import calculate_trend_strength
+from src.analysis.market_structure import classify_structure
+from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
 from src.config import (
-    RISK_PER_TRADE, QUALITY_SCORE_MIN, TIMEFRAMES, TOP_PAIRS, DATA_DIR,
+    RISK_PER_TRADE, QUALITY_SCORE_MIN, CONFLUENCE_MIN, TIMEFRAMES, TOP_PAIRS, DATA_DIR,
 )
 
 logger = logging.getLogger("pa_bot")
@@ -69,6 +73,7 @@ class PaperTraderConfig:
     max_cycles: int = 0       # 0 = run forever
     auto_pair_selection: bool = True
     use_learning: bool = True
+    use_session_filter: bool = True
 
 
 @dataclass
@@ -176,8 +181,9 @@ class PaperTrader:
             "Scanning pairs: %s | Timeframes: %s | Signals: %s",
             self.config.pairs, self.config.timeframes, self.config.signal_types,
         )
-        logger.info("Poll interval: %ds | Max open trades: %d",
-                     self.config.poll_interval, self.config.max_open_trades)
+        logger.info("Poll interval: %ds | Max open trades: %d | Session: %s",
+                     self.config.poll_interval, self.config.max_open_trades,
+                     get_session_name())
         logger.info("-" * 60)
 
         try:
@@ -222,9 +228,6 @@ class PaperTrader:
 
         # Sync open trades and record any that closed
         self._check_closed_trades()
-
-        # Close trades that have reached 50% of their TP target
-        self._check_partial_profit()
 
         # Run learning corrections periodically
         if self.config.use_learning and self.state.cycles % 10 == 0:
@@ -283,10 +286,39 @@ class PaperTrader:
                 logger.debug("Detector %s failed on %s %s: %s",
                              sig_type, pair, timeframe, e)
 
-        # Score and filter
+        # Score signals with full 6-factor quality scorer
+        trend = calculate_trend_strength(df)
+        structure = classify_structure(df)
+
         scored = []
         for signal in signals:
-            # Apply adaptive adjustment
+            # Skip signals with insufficient confluence
+            if signal.confluence_level < CONFLUENCE_MIN:
+                continue
+
+            # Get performance-based win rates for quality scoring
+            live_wr = None
+            if self.perf_tracker:
+                stats = self.perf_tracker.get_stats(
+                    pair=pair, signal_type=signal.signal_type.value,
+                    source="paper", last_n=50,
+                )
+                if stats.total_trades >= 5:
+                    live_wr = stats.win_rate
+
+            # Calculate proper 6-factor quality score
+            direction = "bullish" if signal.direction == SignalDirection.BUY else "bearish"
+            confluence = calculate_confluence(df, direction=direction)
+            breakdown = score_signal(
+                signal,
+                confluence=confluence,
+                trend=trend,
+                structure=structure,
+                live_win_rate=live_wr,
+            )
+            signal.quality_score = breakdown.total_score
+
+            # Apply adaptive adjustment on top
             if self.adaptive:
                 adj = self.adaptive.get_adjustment(
                     signal.signal_type.value, pair, timeframe, source="paper",
@@ -415,74 +447,31 @@ class PaperTrader:
                 exit_price, realized_pnl, exit_reason,
             )
 
-    def _check_partial_profit(self) -> None:
-        """Close trades that have reached 50% of their TP target."""
-        # Batch-fetch current prices for all pairs with open trades
-        open_pairs = {meta["pair"] for meta in self._signal_meta.values()}
-        if not open_pairs:
-            return
-        current_prices = {}
-        try:
-            resp = self.connector._request(
-                "GET",
-                f"/v3/accounts/{self.connector.account_id}/pricing",
-                params={"instruments": ",".join(open_pairs)},
-            )
-            for p in resp.get("prices", []):
-                bid = float(p["bids"][0]["price"])
-                ask = float(p["asks"][0]["price"])
-                current_prices[p["instrument"]] = (bid + ask) / 2
-        except Exception as e:
-            logger.debug("Failed to fetch prices for early TP check: %s", e)
-            return
-
-        for oid, order in list(self.order_mgr.open_orders.items()):
-            meta = self._signal_meta.get(oid)
-            if not meta:
-                continue
-
-            entry = meta["entry_price"]
-            tp = meta["take_profit"]
-            direction = meta["direction"]
-
-            current_price = current_prices.get(meta["pair"])
-            if not current_price:
-                continue
-
-            # Calculate 50% target price
-            tp_distance = tp - entry  # positive for buy, negative for sell
-            half_tp = entry + tp_distance * 0.5
-
-            hit_target = False
-            if direction == "buy" and current_price >= half_tp:
-                hit_target = True
-            elif direction == "sell" and current_price <= half_tp:
-                hit_target = True
-
-            if hit_target:
-                logger.info(
-                    "EARLY TP: %s %s reached 50%% of target (%.5f / %.5f) — closing",
-                    direction.upper(), order.pair, current_price, tp,
-                )
-                try:
-                    self.order_mgr.close_order(oid)
-                except Exception as e:
-                    logger.error("Failed to close %s for early TP: %s", oid, e)
-
     def _get_active_pairs(self) -> list[str]:
         """Get the list of pairs to scan this cycle.
 
-        Uses configured pairs until the learning system has enough data,
-        then switches to performance-based selection.
+        Filters by market session first, then uses performance-based
+        selection if enough data is available.
         """
+        base_pairs = self.config.pairs
+
+        # Filter by trading session if enabled
+        if self.config.use_session_filter:
+            base_pairs = get_tradeable_pairs(base_pairs)
+            if not base_pairs:
+                logger.debug("No pairs in session — skipping cycle")
+                return []
+
         if self.pair_selector and self.config.auto_pair_selection:
-            # Only use adaptive selection once we have enough data
             stats = self.perf_tracker.get_stats(source="paper")
             if stats.total_trades >= self.pair_selector.min_trades * 2:
                 selected = self.pair_selector.select(source="paper")
                 if selected:
+                    if self.config.use_session_filter:
+                        return [p for p in selected if p in base_pairs]
                     return selected
-        return self.config.pairs
+
+        return base_pairs
 
     def _get_enabled_signal_types(self) -> list[str]:
         """Get signal types not disabled by the self-corrector."""
