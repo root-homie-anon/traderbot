@@ -13,7 +13,10 @@ from src.broker.broker_base import (
 from src.risk.position_sizer import calculate_position_size
 from src.risk.daily_limits import DailyLimitTracker
 from src.risk.drawdown_manager import DrawdownManager
+from src.risk.stop_validator import validate_stop
 from src.signals.signal_base import Signal, SignalDirection
+from src.utils.helpers import get_pip_value
+from src.utils.validators import validate_signal
 
 logger = logging.getLogger("pa_bot")
 
@@ -63,6 +66,13 @@ class OrderManager:
 
     def submit_signal(self, signal: Signal) -> OrderResult:
         """Validate and place an order from a trading signal."""
+        # Validate signal fields and logical consistency
+        signal_errors = validate_signal(signal)
+        if signal_errors:
+            reason = "signal validation failed: " + "; ".join(signal_errors)
+            logger.warning("Rejecting signal: %s", reason)
+            return OrderResult(success=False, reason=reason)
+
         # Check daily limits
         if self.use_daily_limits and not self.daily_limits.can_trade():
             return OrderResult(success=False, reason="daily loss limit reached")
@@ -79,6 +89,19 @@ class OrderManager:
                     reason=f"already have open trade on {signal.pair}",
                 )
 
+        # Validate stop distance before sizing
+        pip_value = get_pip_value(signal.pair)
+        stop_check = validate_stop(
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            direction=signal.direction.value,
+            pip_value=pip_value,
+        )
+        if not stop_check["valid"]:
+            reason = f"stop rejected: {stop_check['reason']}"
+            logger.warning("Rejecting order for %s — %s", signal.pair, reason)
+            return OrderResult(success=False, reason=reason)
+
         # Position sizing
         risk_mult = (
             self.drawdown_mgr.risk_multiplier()
@@ -90,6 +113,7 @@ class OrderManager:
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             risk_pct=self.risk_per_trade * risk_mult,
+            pip_value=pip_value,
         )
 
         if sizing["position_size"] <= 0:

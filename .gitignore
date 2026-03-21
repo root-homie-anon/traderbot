@@ -1,11 +1,11 @@
 # Secrets & config
-data/config.json
 .env
 
-# Database & generated data
-data/trades.db
-data/historical/
-data/backtest_results/
+# Live data directory (SQLite databases, historical data, backtest results)
+data/
+
+# Catch-all for any .db files outside data/
+*.db
 
 # Logs
 logs/
