@@ -335,18 +335,26 @@ class PaperTrader:
         # Sync open trades and record any that closed
         self._check_closed_trades()
 
+        # Resolve current session once per cycle so all downstream calls agree
+        current_session = get_session_name()
+
         # Run learning corrections periodically
         if self.config.use_learning and self.state.cycles % 10 == 0:
-            self._run_corrections()
+            self._run_corrections(session=current_session)
+
+        # Advance the adaptive engine cache every cycle so stale entries are
+        # evicted based on TTL rather than only on the 10-cycle correction flush
+        if self.config.use_learning and self.adaptive:
+            self.adaptive.advance_cycle()
 
         # Select pairs
-        pairs = self._get_active_pairs()
+        pairs = self._get_active_pairs(session=current_session)
 
         # Scan for signals
         all_signals: list[Signal] = []
         for pair in pairs:
             for tf in self.config.timeframes:
-                signals = self._scan_pair(pair, tf)
+                signals = self._scan_pair(pair, tf, session=current_session)
                 all_signals.extend(signals)
 
         if not all_signals:
@@ -364,7 +372,9 @@ class PaperTrader:
                 break
             self._try_place_order(signal)
 
-    def _scan_pair(self, pair: str, timeframe: str) -> list[Signal]:
+    def _scan_pair(
+        self, pair: str, timeframe: str, session: str | None = None
+    ) -> list[Signal]:
         """Fetch candles and generate signals for one pair/timeframe."""
         try:
             df = self.connector.get_candles(pair, timeframe, count=CANDLE_COUNT)
@@ -376,7 +386,7 @@ class PaperTrader:
             return []
 
         signals = []
-        enabled_types = self._get_enabled_signal_types()
+        enabled_types = self._get_enabled_signal_types(session=session)
 
         for sig_type in enabled_types:
             detector = SIGNAL_DETECTORS.get(sig_type)
@@ -402,13 +412,20 @@ class PaperTrader:
             if signal.confluence_level < CONFLUENCE_MIN:
                 continue
 
-            # Get performance-based win rates for quality scoring
+            # Get performance-based win rates for quality scoring.
+            # Prefer session-scoped stats; fall back to global if data is thin.
             live_wr = None
             if self.perf_tracker:
                 stats = self.perf_tracker.get_stats(
                     pair=pair, signal_type=signal.signal_type.value,
-                    source="paper", last_n=50,
+                    source="paper", last_n=50, session=session,
+                    weight_type="exponential",
                 )
+                if stats.total_trades < 5 and session:
+                    stats = self.perf_tracker.get_stats(
+                        pair=pair, signal_type=signal.signal_type.value,
+                        source="paper", last_n=50, weight_type="exponential",
+                    )
                 if stats.total_trades >= 5:
                     live_wr = stats.win_rate
 
@@ -568,11 +585,12 @@ class PaperTrader:
                 exit_price, realized_pnl, exit_reason,
             )
 
-    def _get_active_pairs(self) -> list[str]:
+    def _get_active_pairs(self, session: str | None = None) -> list[str]:
         """Get the list of pairs to scan this cycle.
 
         Filters by market session first, then uses performance-based
-        selection if enough data is available.
+        selection if enough data is available.  When ``session`` is given,
+        pair selection ranks using session-scoped performance data.
         """
         base_pairs = self.config.pairs
 
@@ -586,7 +604,9 @@ class PaperTrader:
         if self.pair_selector and self.config.auto_pair_selection:
             stats = self.perf_tracker.get_stats(source="paper")
             if stats.total_trades >= self.pair_selector.min_trades * 2:
-                selected = self.pair_selector.select(source="paper")
+                selected = self.pair_selector.select(
+                    source="paper", session=session
+                )
                 if selected:
                     if self.config.use_session_filter:
                         return [p for p in selected if p in base_pairs]
@@ -594,17 +614,25 @@ class PaperTrader:
 
         return base_pairs
 
-    def _get_enabled_signal_types(self) -> list[str]:
-        """Get signal types not disabled by the self-corrector."""
+    def _get_enabled_signal_types(self, session: str | None = None) -> list[str]:
+        """Get signal types not disabled by the self-corrector.
+
+        When ``session`` is provided, a signal type is excluded if it is
+        disabled either globally or specifically for that session.
+        """
         if self.corrector:
             return [
                 st for st in self.config.signal_types
-                if self.corrector.is_signal_enabled(st)
+                if self.corrector.is_signal_enabled(st, session=session)
             ]
         return self.config.signal_types
 
-    def _run_corrections(self) -> None:
-        """Run the self-corrector and apply any corrections."""
+    def _run_corrections(self, session: str | None = None) -> None:
+        """Run the self-corrector and apply any corrections.
+
+        When ``session`` is provided, corrections are evaluated against
+        session-scoped stats and applied as per-session disables.
+        """
         if not self.corrector:
             return
 
@@ -612,14 +640,12 @@ class PaperTrader:
             signal_types=self.config.signal_types,
             source="paper",
             last_n=50,
+            session=session,
         )
 
         for correction in corrections:
             logger.warning("CORRECTION: %s — %s", correction.action.value, correction.detail)
             self.corrector.apply_correction(correction)
-
-        if self.adaptive:
-            self.adaptive.clear_cache()
 
     def _shutdown(self) -> None:
         """Clean shutdown — log summary and disconnect."""
