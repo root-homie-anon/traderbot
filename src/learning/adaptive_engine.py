@@ -15,8 +15,23 @@ logger = logging.getLogger("pa_bot")
 
 # Thresholds for adjustment
 MIN_TRADES_FOR_ADJUSTMENT = 30
-STRONG_WIN_RATE = 0.60
-WEAK_WIN_RATE = 0.40
+# Per-signal-type thresholds based on research-validated benchmarks.
+# Reversals and BOS have lower natural win rates but better R:R;
+# pullbacks have the highest natural win rate.
+STRONG_WIN_RATES: dict[str, float] = {
+    "reversal": 0.52,
+    "pullback": 0.58,
+    "buildup": 0.53,
+    "bos": 0.48,
+}
+WEAK_WIN_RATES: dict[str, float] = {
+    "reversal": 0.38,
+    "pullback": 0.42,
+    "buildup": 0.38,
+    "bos": 0.32,
+}
+_DEFAULT_STRONG_WIN_RATE = 0.55
+_DEFAULT_WEAK_WIN_RATE = 0.40
 BOOST_FACTOR = 1.25
 PENALTY_FACTOR = 0.70
 NEUTRAL_FACTOR = 1.0
@@ -150,10 +165,13 @@ class AdaptiveEngine:
         pair: str,
         timeframe: str,
     ) -> ScoreAdjustment:
-        if win_rate >= STRONG_WIN_RATE:
+        strong_threshold = STRONG_WIN_RATES.get(signal_type, _DEFAULT_STRONG_WIN_RATE)
+        weak_threshold = WEAK_WIN_RATES.get(signal_type, _DEFAULT_WEAK_WIN_RATE)
+
+        if win_rate >= strong_threshold:
             multiplier = self.boost
             reason = f"strong win rate ({win_rate:.0%})"
-        elif win_rate <= WEAK_WIN_RATE:
+        elif win_rate <= weak_threshold:
             multiplier = self.penalty
             reason = f"weak win rate ({win_rate:.0%})"
         else:

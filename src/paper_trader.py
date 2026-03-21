@@ -27,6 +27,7 @@ from src.signals.quality_scorer import score_signal
 from src.analysis.confluence import calculate_confluence
 from src.analysis.trend_strength import calculate_trend_strength
 from src.analysis.market_structure import classify_structure
+from src.analysis.regime_detector import RegimeDetector
 from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
 from src.config import (
@@ -117,6 +118,7 @@ class PaperTrader:
         self.corrector: SelfCorrector | None = None
         self.pair_selector: PairSelector | None = None
 
+        self.regime_detector = RegimeDetector()
         self.state = PaperTraderState()
         self._running = False
         # Map order_id -> signal metadata for recording closed trades
@@ -385,6 +387,12 @@ class PaperTrader:
         if len(df) < 50:
             return []
 
+        regime = self.regime_detector.detect_regime(df)
+        logger.debug(
+            "Regime %s %s: %s (ADX=%.1f)",
+            pair, timeframe, regime.regime_type, regime.adx_value,
+        )
+
         signals = []
         enabled_types = self._get_enabled_signal_types(session=session)
 
@@ -440,6 +448,12 @@ class PaperTrader:
                 live_win_rate=live_wr,
             )
             signal.quality_score = breakdown.total_score
+
+            # Apply regime multiplier based on current market state
+            regime_multiplier = regime.signal_multipliers.get(
+                signal.signal_type.value, 1.0
+            )
+            signal.quality_score *= regime_multiplier
 
             # Apply adaptive adjustment on top
             if self.adaptive:
