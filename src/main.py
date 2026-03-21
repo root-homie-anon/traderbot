@@ -1,10 +1,23 @@
 """Bot entry point - modes: backtest, paper, live."""
 
 import argparse
+import signal
 
 from src.logger import setup_logger
 
 logger = setup_logger()
+
+_shutdown_requested = False
+
+
+def _handle_signal(signum: int, frame) -> None:  # type: ignore[type-arg]
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info("Shutdown signal received (%s) — stopping after current cycle", signum)
+
+
+signal.signal(signal.SIGTERM, _handle_signal)
+signal.signal(signal.SIGINT, _handle_signal)
 
 
 def main():
@@ -101,7 +114,14 @@ def _run_paper(args):
         config.timeframes = args.timeframes
 
     trader = PaperTrader(config=config)
-    trader.start()
+    try:
+        trader.start()
+    except Exception as e:
+        logger.critical("Unhandled exception in paper trader: %s", e, exc_info=True)
+        raise
+    finally:
+        if trader._running:
+            trader._shutdown()
 
 
 if __name__ == "__main__":

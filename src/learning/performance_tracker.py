@@ -162,6 +162,7 @@ class PerformanceTracker:
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS trade_results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,9 +192,12 @@ class PerformanceTracker:
                 ).fetchall()
             }
             if "session" not in existing_cols:
-                conn.execute(
-                    "ALTER TABLE trade_results ADD COLUMN session TEXT DEFAULT NULL"
-                )
+                try:
+                    conn.execute(
+                        "ALTER TABLE trade_results ADD COLUMN session TEXT DEFAULT NULL"
+                    )
+                except Exception as e:
+                    logger.warning("Migration: could not add session column: %s", e)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_trade_pair
                 ON trade_results(pair, signal_type, timeframe)
@@ -216,32 +220,38 @@ class PerformanceTracker:
         else:
             trade_session = get_session_name()
 
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO trade_results
-                (timestamp, pair, signal_type, timeframe, direction,
-                 entry_price, exit_price, stop_loss, take_profit,
-                 pnl, risk_amount, exit_reason, quality_score,
-                 confluence_level, source, session)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                ts_raw,
-                trade.get("pair", ""),
-                trade.get("signal_type", ""),
-                trade.get("timeframe", ""),
-                trade.get("direction", ""),
-                trade.get("entry_price", 0),
-                trade.get("exit_price", 0),
-                trade.get("stop_loss", 0),
-                trade.get("take_profit", 0),
-                trade.get("pnl", 0),
-                trade.get("risk_amount", 0),
-                trade.get("exit_reason", ""),
-                trade.get("quality_score", 0),
-                trade.get("confluence_level", 0),
-                source,
-                trade_session,
-            ))
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO trade_results
+                    (timestamp, pair, signal_type, timeframe, direction,
+                     entry_price, exit_price, stop_loss, take_profit,
+                     pnl, risk_amount, exit_reason, quality_score,
+                     confluence_level, source, session)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ts_raw,
+                    trade.get("pair", ""),
+                    trade.get("signal_type", ""),
+                    trade.get("timeframe", ""),
+                    trade.get("direction", ""),
+                    trade.get("entry_price", 0),
+                    trade.get("exit_price", 0),
+                    trade.get("stop_loss", 0),
+                    trade.get("take_profit", 0),
+                    trade.get("pnl", 0),
+                    trade.get("risk_amount", 0),
+                    trade.get("exit_reason", ""),
+                    trade.get("quality_score", 0),
+                    trade.get("confluence_level", 0),
+                    source,
+                    trade_session,
+                ))
+        except Exception as e:
+            logger.error(
+                "Failed to record trade for %s (%s): %s",
+                trade.get("pair", "unknown"), source, e,
+            )
 
     def record_trades(self, trades: list[dict], source: str = "backtest") -> None:
         """Record multiple completed trades."""

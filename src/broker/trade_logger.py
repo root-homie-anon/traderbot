@@ -28,6 +28,7 @@ class TradeLogger:
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS trade_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,48 +132,62 @@ class TradeLogger:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def save_signal_meta(self, order_id: str, meta: dict) -> None:
+    def save_signal_meta(self, order_id: str, meta: dict) -> bool:
         """Upsert signal metadata for a pending trade."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO signal_meta
-                    (order_id, pair, signal_type, timeframe, direction,
-                     quality_score, confluence_level, entry_price, stop_loss, take_profit)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(order_id) DO UPDATE SET
-                    pair = excluded.pair,
-                    signal_type = excluded.signal_type,
-                    timeframe = excluded.timeframe,
-                    direction = excluded.direction,
-                    quality_score = excluded.quality_score,
-                    confluence_level = excluded.confluence_level,
-                    entry_price = excluded.entry_price,
-                    stop_loss = excluded.stop_loss,
-                    take_profit = excluded.take_profit
-            """, (
-                order_id,
-                meta.get("pair", ""),
-                meta.get("signal_type", "unknown"),
-                meta.get("timeframe", ""),
-                meta.get("direction", ""),
-                meta.get("quality_score", 0.0),
-                meta.get("confluence_level", 0.0),
-                meta.get("entry_price", 0.0),
-                meta.get("stop_loss", 0.0),
-                meta.get("take_profit", 0.0),
-            ))
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO signal_meta
+                        (order_id, pair, signal_type, timeframe, direction,
+                         quality_score, confluence_level, entry_price, stop_loss, take_profit)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(order_id) DO UPDATE SET
+                        pair = excluded.pair,
+                        signal_type = excluded.signal_type,
+                        timeframe = excluded.timeframe,
+                        direction = excluded.direction,
+                        quality_score = excluded.quality_score,
+                        confluence_level = excluded.confluence_level,
+                        entry_price = excluded.entry_price,
+                        stop_loss = excluded.stop_loss,
+                        take_profit = excluded.take_profit
+                """, (
+                    order_id,
+                    meta.get("pair", ""),
+                    meta.get("signal_type", "unknown"),
+                    meta.get("timeframe", ""),
+                    meta.get("direction", ""),
+                    meta.get("quality_score", 0.0),
+                    meta.get("confluence_level", 0.0),
+                    meta.get("entry_price", 0.0),
+                    meta.get("stop_loss", 0.0),
+                    meta.get("take_profit", 0.0),
+                ))
+            return True
+        except Exception as e:
+            logger.warning("Failed to save signal meta for order %s: %s", order_id, e)
+            return False
 
     def load_pending_signal_meta(self) -> dict[str, dict]:
         """Return all persisted signal metadata keyed by order_id."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM signal_meta").fetchall()
-        return {row["order_id"]: dict(row) for row in rows}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute("SELECT * FROM signal_meta").fetchall()
+            return {row["order_id"]: dict(row) for row in rows}
+        except Exception as e:
+            logger.warning("Failed to load pending signal meta: %s", e)
+            return {}
 
-    def delete_signal_meta(self, order_id: str) -> None:
+    def delete_signal_meta(self, order_id: str) -> bool:
         """Remove signal metadata once a trade outcome has been recorded."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM signal_meta WHERE order_id = ?", (order_id,))
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM signal_meta WHERE order_id = ?", (order_id,))
+            return True
+        except Exception as e:
+            logger.warning("Failed to delete signal meta for order %s: %s", order_id, e)
+            return False
 
     def clear(self) -> None:
         """Clear the trade log."""

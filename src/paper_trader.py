@@ -130,8 +130,27 @@ class PaperTrader:
         logger.info("PAPER TRADER STARTING")
         logger.info("=" * 60)
 
-        if not self.connector.connect():
-            logger.error("Failed to connect to OANDA — check API key and account ID")
+        _connect_attempts = 3
+        _connect_delay = 10
+        _connected = False
+        for _attempt in range(1, _connect_attempts + 1):
+            logger.info(
+                "Connecting to OANDA (attempt %d/%d)...", _attempt, _connect_attempts,
+            )
+            if self.connector.connect():
+                _connected = True
+                break
+            if _attempt < _connect_attempts:
+                logger.warning(
+                    "Connection failed — retrying in %ds...", _connect_delay,
+                )
+                time.sleep(_connect_delay)
+
+        if not _connected:
+            logger.error(
+                "Failed to connect to OANDA after %d attempts — check API key and account ID",
+                _connect_attempts,
+            )
             return
 
         # Get account info
