@@ -326,6 +326,16 @@ class OandaConnector(BrokerBase):
         bid = float(p["bids"][0]["price"])
         return ask - bid
 
+    def _reset_session(self) -> None:
+        """Close and rebuild the HTTP session to discard stale pooled connections."""
+        if self._session:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+        self._session = requests.Session()
+        self._session.headers.update(self._headers)
+
     def _request(self, method: str, path: str, **kwargs) -> dict:
         """Make an authenticated request to OANDA API with retry on transient errors."""
         _retryable = (
@@ -346,7 +356,20 @@ class OandaConnector(BrokerBase):
             if delay:
                 time.sleep(delay)
             try:
-                resp = session.request(method, url, timeout=30, **kwargs)
+                resp = session.request(
+                    method, url, timeout=(10, 30), **kwargs
+                )
+
+                # Treat 502/503/504 as transient — retry instead of raising
+                if resp.status_code in (502, 503, 504):
+                    logger.error(
+                        "OANDA API error %d (transient): %s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    raise requests.exceptions.ConnectionError(
+                        f"Transient {resp.status_code} from OANDA"
+                    )
 
                 if resp.status_code >= 400:
                     logger.error("OANDA API error %d: %s", resp.status_code, resp.text)
@@ -365,6 +388,9 @@ class OandaConnector(BrokerBase):
                 logger.warning(
                     "OANDA request transient error (attempt %d/3): %s", attempt, e,
                 )
+                # Discard pooled connections — half-open sockets cause hangs
+                self._reset_session()
+                session = self._session
                 if attempt == 3:
                     raise
 
