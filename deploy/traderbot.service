@@ -1,0 +1,29 @@
+[Unit]
+Description=Traderbot — OANDA paper trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/claude-dev/projects/traderbot
+EnvironmentFile=/home/claude-dev/projects/traderbot/.env
+
+ExecStart=/usr/bin/python3 -m src.main \
+    --mode paper \
+    --timeframes H1 \
+    --max-trades 5
+
+# Restart on crash, but not on clean exit (e.g. intentional stop)
+Restart=on-failure
+RestartSec=30
+
+# Stdout and stderr go to journald; also tee to logs/
+StandardOutput=append:/home/claude-dev/projects/traderbot/logs/bot.log
+StandardError=append:/home/claude-dev/projects/traderbot/logs/bot.log
+
+# Give the bot time to flush DBs and close connections on stop
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target
