@@ -43,8 +43,8 @@ def main():
     parser.add_argument(
         "--max-trades",
         type=int,
-        default=3,
-        help="Max simultaneous open trades (default: 3)",
+        default=5,
+        help="Max simultaneous open trades (default: 5)",
     )
     parser.add_argument(
         "--poll-interval",
