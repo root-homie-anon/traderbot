@@ -61,6 +61,7 @@ class PaperTraderConfig:
 
     pairs: list[str] = field(default_factory=lambda: [
         "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "EUR_GBP",
+        "USD_CAD", "NZD_USD", "EUR_JPY", "GBP_JPY",
     ])
     timeframes: list[str] = field(default_factory=lambda: ["H1"])
     signal_types: list[str] = field(default_factory=lambda: [
@@ -69,7 +70,7 @@ class PaperTraderConfig:
     min_quality_score: float = QUALITY_SCORE_MIN
     min_rr: float = 2.0
     risk_per_trade: float = RISK_PER_TRADE
-    max_open_trades: int = 3
+    max_open_trades: int = 5
     poll_interval: int = 120  # seconds between scan cycles
     max_cycles: int = 0       # 0 = run forever
     auto_pair_selection: bool = True

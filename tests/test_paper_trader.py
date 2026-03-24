@@ -227,9 +227,9 @@ class TestPaperTraderConfig:
     def test_defaults(self):
         config = PaperTraderConfig()
         assert config.poll_interval == 120
-        assert config.max_open_trades == 3
+        assert config.max_open_trades == 5
         assert "reversal" in config.signal_types
-        assert len(config.pairs) == 5
+        assert len(config.pairs) == 9
 
     def test_custom(self):
         config = PaperTraderConfig(

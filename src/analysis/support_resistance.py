@@ -100,7 +100,7 @@ def find_support_resistance(
     pivot_left: int = 5,
     pivot_right: int = 5,
     cluster_tolerance: float = 0.002,
-    min_touches: int = 3,
+    min_touches: int = 2,
 ) -> list[Level]:
     """Main function: find all S/R levels with quality scoring.
 

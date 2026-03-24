@@ -15,8 +15,10 @@ from src.analysis.confluence import calculate_confluence
 from src.analysis.trend_strength import calculate_trend_strength
 from src.analysis.market_structure import classify_structure
 from src.risk.position_sizer import calculate_position_size
+from src.risk.stop_validator import validate_stop
 from src.risk.daily_limits import DailyLimitTracker
 from src.risk.drawdown_manager import DrawdownManager
+from src.utils.helpers import get_pip_value
 from src.backtest.metrics import calculate_metrics, BacktestMetrics
 from src.config import RISK_PER_TRADE, QUALITY_SCORE_MIN, CONFLUENCE_MIN
 
@@ -165,6 +167,17 @@ def run_backtest(
             if any(t.signal.pair == signal.pair and t.signal.direction != signal.direction for t in open_trades):
                 continue
 
+            # Validate stop before sizing (same gate as live path)
+            pip_value = get_pip_value(signal.pair)
+            stop_check = validate_stop(
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                direction=signal.direction.value,
+                pip_value=pip_value,
+            )
+            if not stop_check["valid"]:
+                continue
+
             # Position sizing with drawdown scaling
             risk_mult = drawdown_mgr.risk_multiplier() if config.use_drawdown_scaling else 1.0
             sizing = calculate_position_size(
@@ -172,6 +185,7 @@ def run_backtest(
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
                 risk_pct=config.risk_per_trade * risk_mult,
+                pip_value=pip_value,
             )
 
             if sizing["position_size"] <= 0:

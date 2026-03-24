@@ -36,10 +36,10 @@ _THRESHOLD_TRANSITIONING: float = 25.0
 _THRESHOLD_STRONG_TREND: float = 40.0
 
 _SIGNAL_MULTIPLIERS: dict[str, dict[str, float]] = {
-    "ranging":       {"reversal": 1.2, "pullback": 0.8, "buildup": 1.0, "bos": 0.6},
+    "ranging":       {"reversal": 1.2, "pullback": 0.8, "buildup": 1.0, "bos": 0.8},
     "transitioning": {"reversal": 1.0, "pullback": 1.0, "buildup": 1.0, "bos": 1.0},
-    "trending":      {"reversal": 0.6, "pullback": 1.2, "buildup": 1.0, "bos": 1.2},
-    "strong_trend":  {"reversal": 0.3, "pullback": 1.3, "buildup": 1.0, "bos": 1.3},
+    "trending":      {"reversal": 0.8, "pullback": 1.2, "buildup": 1.0, "bos": 1.2},
+    "strong_trend":  {"reversal": 0.5, "pullback": 1.3, "buildup": 1.0, "bos": 1.3},
 }
 
 

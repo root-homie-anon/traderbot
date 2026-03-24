@@ -25,7 +25,7 @@ def detect_reversal_signals(
     df: pd.DataFrame,
     pair: str = "",
     timeframe: str = "",
-    sr_proximity_pct: float = 0.003,
+    sr_proximity_pct: float = 0.005,
     min_rr: float = 2.0,
     lookback_bars: int = 3,
 ) -> list[Signal]:
@@ -68,7 +68,7 @@ def detect_reversal_signals(
             ]
             if bullish_patterns:
                 best_pattern = max(bullish_patterns, key=lambda p: p.strength)
-                stop_loss = support.price - (current_price - support.price) * 0.5
+                stop_loss = support.price - atr * 0.5
                 risk = current_price - stop_loss
 
                 # Target: next resistance or min R:R
