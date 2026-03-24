@@ -27,6 +27,7 @@ from src.signals.quality_scorer import score_signal
 from src.analysis.confluence import calculate_confluence
 from src.analysis.trend_strength import calculate_trend_strength
 from src.analysis.market_structure import classify_structure
+from src.analysis.regime_detector import RegimeDetector
 from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
 from src.config import (
@@ -60,6 +61,7 @@ class PaperTraderConfig:
 
     pairs: list[str] = field(default_factory=lambda: [
         "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "EUR_GBP",
+        "USD_CAD", "NZD_USD", "EUR_JPY", "GBP_JPY",
     ])
     timeframes: list[str] = field(default_factory=lambda: ["H1"])
     signal_types: list[str] = field(default_factory=lambda: [
@@ -68,7 +70,7 @@ class PaperTraderConfig:
     min_quality_score: float = QUALITY_SCORE_MIN
     min_rr: float = 2.0
     risk_per_trade: float = RISK_PER_TRADE
-    max_open_trades: int = 3
+    max_open_trades: int = 5
     poll_interval: int = 120  # seconds between scan cycles
     max_cycles: int = 0       # 0 = run forever
     auto_pair_selection: bool = True
@@ -117,6 +119,7 @@ class PaperTrader:
         self.corrector: SelfCorrector | None = None
         self.pair_selector: PairSelector | None = None
 
+        self.regime_detector = RegimeDetector()
         self.state = PaperTraderState()
         self._running = False
         # Map order_id -> signal metadata for recording closed trades
@@ -128,8 +131,27 @@ class PaperTrader:
         logger.info("PAPER TRADER STARTING")
         logger.info("=" * 60)
 
-        if not self.connector.connect():
-            logger.error("Failed to connect to OANDA — check API key and account ID")
+        _connect_attempts = 3
+        _connect_delay = 10
+        _connected = False
+        for _attempt in range(1, _connect_attempts + 1):
+            logger.info(
+                "Connecting to OANDA (attempt %d/%d)...", _attempt, _connect_attempts,
+            )
+            if self.connector.connect():
+                _connected = True
+                break
+            if _attempt < _connect_attempts:
+                logger.warning(
+                    "Connection failed — retrying in %ds...", _connect_delay,
+                )
+                time.sleep(_connect_delay)
+
+        if not _connected:
+            logger.error(
+                "Failed to connect to OANDA after %d attempts — check API key and account ID",
+                _connect_attempts,
+            )
             return
 
         # Get account info
@@ -176,6 +198,9 @@ class PaperTrader:
         except Exception as e:
             logger.warning("Failed to backfill existing trades: %s", e)
 
+        # Reconcile trades that closed while the bot was offline
+        self._reconcile_offline_closed_trades()
+
         self._running = True
         logger.info(
             "Scanning pairs: %s | Timeframes: %s | Signals: %s",
@@ -196,6 +221,109 @@ class PaperTrader:
     def stop(self) -> None:
         """Signal the trading loop to stop."""
         self._running = False
+
+    def _reconcile_offline_closed_trades(self) -> None:
+        """Record outcomes for trades that closed while the bot was offline.
+
+        Loads all persisted signal metadata from the database, compares against
+        currently open order IDs at the broker, and for any that are no longer
+        open fetches the closed trade record from OANDA and writes the outcome
+        to the performance tracker.  Orders still open are loaded into
+        _signal_meta so live tracking continues normally.
+        """
+        try:
+            pending_meta = self.trade_logger.load_pending_signal_meta()
+        except Exception as e:
+            logger.warning("Failed to load pending signal metadata: %s", e)
+            return
+
+        if not pending_meta:
+            return
+
+        open_ids = set(self.order_mgr.open_orders.keys())
+        offline_closed = {oid: m for oid, m in pending_meta.items() if oid not in open_ids}
+        still_open = {oid: m for oid, m in pending_meta.items() if oid in open_ids}
+
+        # Restore in-memory meta for trades still open so _check_closed_trades
+        # can pick them up during normal live operation
+        for oid, meta in still_open.items():
+            if oid not in self._signal_meta:
+                self._signal_meta[oid] = meta
+
+        if not offline_closed:
+            return
+
+        logger.info(
+            "Reconciling %d trade(s) closed while offline", len(offline_closed),
+        )
+
+        for oid, meta in offline_closed.items():
+            try:
+                trades_resp = self.connector._request(
+                    "GET",
+                    f"/v3/accounts/{self.connector.account_id}/trades/{oid}",
+                )
+                trade_data = trades_resp.get("trade", {})
+                realized_pnl = float(trade_data.get("realizedPL", 0))
+                exit_price = float(trade_data.get("averageClosePrice", 0))
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch close details for offline trade %s (%s) — skipping: %s",
+                    oid, meta.get("pair", "unknown"), e,
+                )
+                continue
+
+            if exit_price == 0.0:
+                logger.warning(
+                    "Offline trade %s (%s) returned no averageClosePrice — skipping",
+                    oid, meta.get("pair", "unknown"),
+                )
+                continue
+
+            # Determine exit reason from price proximity to SL/TP
+            sl = meta.get("stop_loss", 0.0)
+            tp = meta.get("take_profit", 0.0)
+            if sl > 0 and tp > 0:
+                sl_dist = abs(exit_price - sl)
+                tp_dist = abs(exit_price - tp)
+                exit_reason = "stop_loss" if sl_dist < tp_dist else "take_profit"
+            else:
+                exit_reason = "closed"
+
+            entry = meta.get("entry_price", 0.0)
+            risk_amount = abs(entry - sl) if sl > 0 else 0.0
+
+            try:
+                self.perf_tracker.record_trade({
+                    "timestamp": datetime.now().isoformat(),
+                    "pair": meta.get("pair", ""),
+                    "signal_type": meta.get("signal_type", "unknown"),
+                    "timeframe": meta.get("timeframe", ""),
+                    "direction": meta.get("direction", ""),
+                    "entry_price": entry,
+                    "exit_price": exit_price,
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "pnl": realized_pnl,
+                    "risk_amount": risk_amount,
+                    "exit_reason": exit_reason,
+                    "quality_score": meta.get("quality_score", 0.0),
+                    "confluence_level": meta.get("confluence_level", 0.0),
+                }, source="paper")
+            except Exception as e:
+                logger.warning(
+                    "Failed to record offline trade %s to performance tracker: %s", oid, e,
+                )
+                continue
+
+            self.trade_logger.delete_signal_meta(oid)
+            self.state.total_pnl += realized_pnl
+
+            logger.info(
+                "OFFLINE TRADE RECONCILED: %s %s | exit=%.5f | PnL=%.2f | reason=%s",
+                meta.get("direction", "").upper(), meta.get("pair", ""),
+                exit_price, realized_pnl, exit_reason,
+            )
 
     def _run_loop(self) -> None:
         """Main polling loop."""
@@ -229,18 +357,26 @@ class PaperTrader:
         # Sync open trades and record any that closed
         self._check_closed_trades()
 
+        # Resolve current session once per cycle so all downstream calls agree
+        current_session = get_session_name()
+
         # Run learning corrections periodically
         if self.config.use_learning and self.state.cycles % 10 == 0:
-            self._run_corrections()
+            self._run_corrections(session=current_session)
+
+        # Advance the adaptive engine cache every cycle so stale entries are
+        # evicted based on TTL rather than only on the 10-cycle correction flush
+        if self.config.use_learning and self.adaptive:
+            self.adaptive.advance_cycle()
 
         # Select pairs
-        pairs = self._get_active_pairs()
+        pairs = self._get_active_pairs(session=current_session)
 
         # Scan for signals
         all_signals: list[Signal] = []
         for pair in pairs:
             for tf in self.config.timeframes:
-                signals = self._scan_pair(pair, tf)
+                signals = self._scan_pair(pair, tf, session=current_session)
                 all_signals.extend(signals)
 
         if not all_signals:
@@ -258,7 +394,9 @@ class PaperTrader:
                 break
             self._try_place_order(signal)
 
-    def _scan_pair(self, pair: str, timeframe: str) -> list[Signal]:
+    def _scan_pair(
+        self, pair: str, timeframe: str, session: str | None = None
+    ) -> list[Signal]:
         """Fetch candles and generate signals for one pair/timeframe."""
         try:
             df = self.connector.get_candles(pair, timeframe, count=CANDLE_COUNT)
@@ -269,8 +407,14 @@ class PaperTrader:
         if len(df) < 50:
             return []
 
+        regime = self.regime_detector.detect_regime(df)
+        logger.debug(
+            "Regime %s %s: %s (ADX=%.1f)",
+            pair, timeframe, regime.regime_type, regime.adx_value,
+        )
+
         signals = []
-        enabled_types = self._get_enabled_signal_types()
+        enabled_types = self._get_enabled_signal_types(session=session)
 
         for sig_type in enabled_types:
             detector = SIGNAL_DETECTORS.get(sig_type)
@@ -296,13 +440,20 @@ class PaperTrader:
             if signal.confluence_level < CONFLUENCE_MIN:
                 continue
 
-            # Get performance-based win rates for quality scoring
+            # Get performance-based win rates for quality scoring.
+            # Prefer session-scoped stats; fall back to global if data is thin.
             live_wr = None
             if self.perf_tracker:
                 stats = self.perf_tracker.get_stats(
                     pair=pair, signal_type=signal.signal_type.value,
-                    source="paper", last_n=50,
+                    source="paper", last_n=50, session=session,
+                    weight_type="exponential",
                 )
+                if stats.total_trades < 5 and session:
+                    stats = self.perf_tracker.get_stats(
+                        pair=pair, signal_type=signal.signal_type.value,
+                        source="paper", last_n=50, weight_type="exponential",
+                    )
                 if stats.total_trades >= 5:
                     live_wr = stats.win_rate
 
@@ -317,6 +468,12 @@ class PaperTrader:
                 live_win_rate=live_wr,
             )
             signal.quality_score = breakdown.total_score
+
+            # Apply regime multiplier based on current market state
+            regime_multiplier = regime.signal_multipliers.get(
+                signal.signal_type.value, 1.0
+            )
+            signal.quality_score *= regime_multiplier
 
             # Apply adaptive adjustment on top
             if self.adaptive:
@@ -338,7 +495,7 @@ class PaperTrader:
         if result.success:
             self.state.orders_placed += 1
             self.trade_logger.log_order(result.order, event="placed")
-            self._signal_meta[result.order.order_id] = {
+            meta = {
                 "signal_type": signal.signal_type.value,
                 "timeframe": signal.timeframe,
                 "quality_score": signal.quality_score,
@@ -349,6 +506,8 @@ class PaperTrader:
                 "direction": signal.direction.value,
                 "pair": signal.pair,
             }
+            self._signal_meta[result.order.order_id] = meta
+            self.trade_logger.save_signal_meta(result.order.order_id, meta)
             logger.info(
                 "ORDER PLACED: %s %s %s | entry=%.5f sl=%.5f tp=%.5f | QS=%.1f",
                 signal.direction.value.upper(),
@@ -391,9 +550,19 @@ class PaperTrader:
                 trade_data = trades_resp.get("trade", {})
                 realized_pnl = float(trade_data.get("realizedPL", 0))
                 exit_price = float(trade_data.get("averageClosePrice", 0))
-            except Exception:
-                realized_pnl = 0.0
-                exit_price = 0.0
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch close details for trade %s (%s) — skipping outcome record: %s",
+                    oid, meta.get("pair", "unknown"), e,
+                )
+                continue
+
+            if exit_price == 0.0:
+                logger.warning(
+                    "Trade %s (%s) returned no averageClosePrice — skipping outcome record",
+                    oid, meta.get("pair", "unknown"),
+                )
+                continue
 
             self.state.total_pnl += realized_pnl
 
@@ -425,6 +594,9 @@ class PaperTrader:
                 "confluence_level": meta["confluence_level"],
             }, source="paper")
 
+            # Remove persisted signal metadata now that the outcome is recorded
+            self.trade_logger.delete_signal_meta(oid)
+
             # Log to trade logger
             from src.broker.broker_base import Order, OrderSide, OrderType, OrderStatus
             closed_order = Order(
@@ -447,11 +619,12 @@ class PaperTrader:
                 exit_price, realized_pnl, exit_reason,
             )
 
-    def _get_active_pairs(self) -> list[str]:
+    def _get_active_pairs(self, session: str | None = None) -> list[str]:
         """Get the list of pairs to scan this cycle.
 
         Filters by market session first, then uses performance-based
-        selection if enough data is available.
+        selection if enough data is available.  When ``session`` is given,
+        pair selection ranks using session-scoped performance data.
         """
         base_pairs = self.config.pairs
 
@@ -465,7 +638,9 @@ class PaperTrader:
         if self.pair_selector and self.config.auto_pair_selection:
             stats = self.perf_tracker.get_stats(source="paper")
             if stats.total_trades >= self.pair_selector.min_trades * 2:
-                selected = self.pair_selector.select(source="paper")
+                selected = self.pair_selector.select(
+                    source="paper", session=session
+                )
                 if selected:
                     if self.config.use_session_filter:
                         return [p for p in selected if p in base_pairs]
@@ -473,17 +648,25 @@ class PaperTrader:
 
         return base_pairs
 
-    def _get_enabled_signal_types(self) -> list[str]:
-        """Get signal types not disabled by the self-corrector."""
+    def _get_enabled_signal_types(self, session: str | None = None) -> list[str]:
+        """Get signal types not disabled by the self-corrector.
+
+        When ``session`` is provided, a signal type is excluded if it is
+        disabled either globally or specifically for that session.
+        """
         if self.corrector:
             return [
                 st for st in self.config.signal_types
-                if self.corrector.is_signal_enabled(st)
+                if self.corrector.is_signal_enabled(st, session=session)
             ]
         return self.config.signal_types
 
-    def _run_corrections(self) -> None:
-        """Run the self-corrector and apply any corrections."""
+    def _run_corrections(self, session: str | None = None) -> None:
+        """Run the self-corrector and apply any corrections.
+
+        When ``session`` is provided, corrections are evaluated against
+        session-scoped stats and applied as per-session disables.
+        """
         if not self.corrector:
             return
 
@@ -491,14 +674,12 @@ class PaperTrader:
             signal_types=self.config.signal_types,
             source="paper",
             last_n=50,
+            session=session,
         )
 
         for correction in corrections:
             logger.warning("CORRECTION: %s — %s", correction.action.value, correction.detail)
             self.corrector.apply_correction(correction)
-
-        if self.adaptive:
-            self.adaptive.clear_cache()
 
     def _shutdown(self) -> None:
         """Clean shutdown — log summary and disconnect."""

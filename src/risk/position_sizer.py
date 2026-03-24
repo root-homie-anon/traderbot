@@ -28,6 +28,11 @@ def calculate_position_size(
     if stop_distance == 0:
         return {"position_size": 0, "risk_amount": risk_amount, "stop_pips": 0}
 
+    # Defense-in-depth: reject sub-5-pip stops regardless of upstream checks
+    min_stop_distance = pip_value * 5
+    if stop_distance < min_stop_distance:
+        return {"position_size": 0, "risk_amount": risk_amount, "stop_pips": round(stop_distance / pip_value, 1)}
+
     stop_pips = stop_distance / pip_value
     # Position size = risk_amount / (stop_pips * pip_value)
     # For standard forex: 1 unit = $0.0001 per pip

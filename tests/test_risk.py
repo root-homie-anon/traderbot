@@ -101,7 +101,8 @@ class TestDrawdownManager:
 
     def test_severe_drawdown(self):
         mgr = DrawdownManager(peak_balance=300, current_balance=230)
-        assert mgr.risk_multiplier() == 0.25
+        # 23.3% drawdown triggers hard halt (0.0 position size)
+        assert mgr.risk_multiplier() == 0.0
 
     def test_consecutive_losses(self):
         mgr = DrawdownManager(peak_balance=300, current_balance=300)

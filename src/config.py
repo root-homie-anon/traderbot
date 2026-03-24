@@ -19,7 +19,7 @@ TREND_STRENGTH_MIN = 40     # Minimum trend strength (0-100)
 QUALITY_SCORE_MIN = 55      # Minimum quality score (0-100)
 
 # Pair Selection
-TOP_PAIRS = 5               # Trade top 5 pairs
+TOP_PAIRS = 9               # Trade top 9 pairs
 AUTO_PAIR_SELECTION = True   # Dynamic pair selection
 
 # Broker

@@ -43,6 +43,11 @@ def detect_pullback_signals(
     if trend.score < 30:
         return signals  # Need a clear prior move
 
+    # ATR for minimum stop distance floor
+    _atr_raw = (df["high"] - df["low"]).rolling(14).mean().iloc[-1]
+    atr = float(_atr_raw) if (len(df) >= 14 and not pd.isna(_atr_raw)) else float((df["high"] - df["low"]).mean())
+    min_stop = atr * 0.5
+
     # Find the swing extreme of the initial move
     if trend.direction == "bullish":
         swing_low_idx = window["low"].idxmin()
@@ -75,7 +80,9 @@ def detect_pullback_signals(
 
             if bullish_patterns:
                 best = max(bullish_patterns, key=lambda p: p.strength)
-                stop_loss = current_price - move_size * 0.2
+                raw_stop_dist = move_size * 0.2
+                stop_dist = max(raw_stop_dist, min_stop)
+                stop_loss = current_price - stop_dist
                 risk = current_price - stop_loss
                 take_profit = swing_high + risk * 0.5  # Target beyond previous high
 
@@ -130,7 +137,9 @@ def detect_pullback_signals(
 
             if bearish_patterns:
                 best = max(bearish_patterns, key=lambda p: p.strength)
-                stop_loss = current_price + move_size * 0.2
+                raw_stop_dist = move_size * 0.2
+                stop_dist = max(raw_stop_dist, min_stop)
+                stop_loss = current_price + stop_dist
                 risk = stop_loss - current_price
                 take_profit = swing_low - risk * 0.5
 

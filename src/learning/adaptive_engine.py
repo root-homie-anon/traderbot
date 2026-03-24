@@ -14,9 +14,24 @@ from src.learning.performance_tracker import PerformanceTracker
 logger = logging.getLogger("pa_bot")
 
 # Thresholds for adjustment
-MIN_TRADES_FOR_ADJUSTMENT = 10
-STRONG_WIN_RATE = 0.60
-WEAK_WIN_RATE = 0.40
+MIN_TRADES_FOR_ADJUSTMENT = 30
+# Per-signal-type thresholds based on research-validated benchmarks.
+# Reversals and BOS have lower natural win rates but better R:R;
+# pullbacks have the highest natural win rate.
+STRONG_WIN_RATES: dict[str, float] = {
+    "reversal": 0.52,
+    "pullback": 0.58,
+    "buildup": 0.53,
+    "bos": 0.48,
+}
+WEAK_WIN_RATES: dict[str, float] = {
+    "reversal": 0.38,
+    "pullback": 0.42,
+    "buildup": 0.38,
+    "bos": 0.32,
+}
+_DEFAULT_STRONG_WIN_RATE = 0.55
+_DEFAULT_WEAK_WIN_RATE = 0.40
 BOOST_FACTOR = 1.25
 PENALTY_FACTOR = 0.70
 NEUTRAL_FACTOR = 1.0
@@ -35,6 +50,10 @@ class ScoreAdjustment:
     sample_size: int = 0
 
 
+# Internal type for cache entries: (cycle_created, adjustment)
+_CacheEntry = tuple[int, ScoreAdjustment]
+
+
 class AdaptiveEngine:
     """Produce quality-score multipliers from tracked performance.
 
@@ -42,6 +61,11 @@ class AdaptiveEngine:
         engine = AdaptiveEngine(tracker)
         adj = engine.get_adjustment(signal_type="reversal", pair="EUR_USD", timeframe="H1")
         adjusted_score = base_score * adj.multiplier
+
+    Call ``advance_cycle()`` once per trading cycle to evict stale cache
+    entries.  Entries older than ``cache_ttl`` cycles are invalidated so
+    that new trade data is picked up promptly without forcing a full cache
+    flush every 10 cycles.
     """
 
     def __init__(
@@ -50,12 +74,38 @@ class AdaptiveEngine:
         min_trades: int = MIN_TRADES_FOR_ADJUSTMENT,
         boost: float = BOOST_FACTOR,
         penalty: float = PENALTY_FACTOR,
+        cache_ttl: int = 1,
     ):
         self.tracker = tracker
         self.min_trades = min_trades
         self.boost = boost
         self.penalty = penalty
-        self._cache: dict[tuple, ScoreAdjustment] = {}
+        self.cache_ttl = cache_ttl
+        self.cycle_number: int = 0
+        self._cache: dict[tuple, _CacheEntry] = {}
+
+    def advance_cycle(self) -> None:
+        """Increment the cycle counter and evict cache entries older than cache_ttl cycles.
+
+        Call this once per trading cycle so that adjustments reflect trade
+        data recorded during the previous cycle(s) without requiring a full
+        cache flush.
+        """
+        self.cycle_number += 1
+        stale_threshold = self.cycle_number - self.cache_ttl
+        stale_keys = [
+            key
+            for key, (cycle_created, _) in self._cache.items()
+            if cycle_created <= stale_threshold
+        ]
+        for key in stale_keys:
+            del self._cache[key]
+        if stale_keys:
+            logger.debug(
+                "AdaptiveEngine cycle %d: evicted %d stale cache entries",
+                self.cycle_number,
+                len(stale_keys),
+            )
 
     def get_adjustment(
         self,
@@ -71,7 +121,8 @@ class AdaptiveEngine:
         """
         cache_key = (signal_type, pair, timeframe, source, last_n)
         if cache_key in self._cache:
-            return self._cache[cache_key]
+            _cycle_created, cached_adj = self._cache[cache_key]
+            return cached_adj
 
         # Try most specific first, then fall back
         lookups = [
@@ -86,13 +137,13 @@ class AdaptiveEngine:
             # Filter None values
             query = {k: v for k, v in kwargs.items() if v != "*"}
             stats = self.tracker.get_stats(
-                **query, source=source, last_n=last_n
+                **query, source=source, last_n=last_n, weight_type="exponential"
             )
             if stats.total_trades >= self.min_trades:
                 adj = self._compute_adjustment(
                     stats.win_rate, stats.total_trades, signal_type, pair, timeframe
                 )
-                self._cache[cache_key] = adj
+                self._cache[cache_key] = (self.cycle_number, adj)
                 return adj
 
         # Not enough data — neutral
@@ -103,7 +154,7 @@ class AdaptiveEngine:
             multiplier=NEUTRAL_FACTOR,
             reason="insufficient data",
         )
-        self._cache[cache_key] = adj
+        self._cache[cache_key] = (self.cycle_number, adj)
         return adj
 
     def _compute_adjustment(
@@ -114,10 +165,13 @@ class AdaptiveEngine:
         pair: str,
         timeframe: str,
     ) -> ScoreAdjustment:
-        if win_rate >= STRONG_WIN_RATE:
+        strong_threshold = STRONG_WIN_RATES.get(signal_type, _DEFAULT_STRONG_WIN_RATE)
+        weak_threshold = WEAK_WIN_RATES.get(signal_type, _DEFAULT_WEAK_WIN_RATE)
+
+        if win_rate >= strong_threshold:
             multiplier = self.boost
             reason = f"strong win rate ({win_rate:.0%})"
-        elif win_rate <= WEAK_WIN_RATE:
+        elif win_rate <= weak_threshold:
             multiplier = self.penalty
             reason = f"weak win rate ({win_rate:.0%})"
         else:
@@ -163,5 +217,9 @@ class AdaptiveEngine:
         return adjustments
 
     def clear_cache(self) -> None:
-        """Clear the internal cache (call after new trades are recorded)."""
+        """Clear the entire internal cache.
+
+        Prefer ``advance_cycle()`` for per-cycle TTL-based eviction.
+        This method is kept for compatibility and emergency resets.
+        """
         self._cache.clear()
