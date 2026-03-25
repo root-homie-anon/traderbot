@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory=/home/claude-dev/projects/traderbot
 EnvironmentFile=/home/claude-dev/projects/traderbot/.env
 
+ExecStartPre=/usr/bin/mkdir -p /home/claude-dev/projects/traderbot/logs
 ExecStart=/usr/bin/python3 -m src.main \
     --mode paper \
     --timeframes H1 \

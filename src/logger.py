@@ -1,24 +1,19 @@
-"""Logging setup for the trading bot."""
+"""Logging setup for the trading bot.
+
+Logs go to stdout only. When running under systemd, the service unit
+redirects stdout/stderr to logs/bot.log via StandardOutput=append:,
+so a Python FileHandler would duplicate every line.
+"""
 
 import logging
-from pathlib import Path
-
-from src.config import LOG_DIR
 
 
 def setup_logger(name="pa_bot", level=logging.INFO):
     """Configure and return a logger instance."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
     if not logger.handlers:
-        # File handler
-        fh = logging.FileHandler(LOG_DIR / "bot.log")
-        fh.setLevel(level)
-
-        # Console handler
         ch = logging.StreamHandler()
         ch.setLevel(level)
 
@@ -26,10 +21,7 @@ def setup_logger(name="pa_bot", level=logging.INFO):
             "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        fh.setFormatter(formatter)
         ch.setFormatter(formatter)
-
-        logger.addHandler(fh)
         logger.addHandler(ch)
 
     return logger
