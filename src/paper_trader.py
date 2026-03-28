@@ -46,6 +46,9 @@ SIGNAL_DETECTORS = {
 # How many candles to fetch for analysis
 CANDLE_COUNT = 200
 
+# Paper trade target before going live
+PAPER_TRADE_TARGET = 200
+
 # Polling interval in seconds per timeframe
 POLL_INTERVALS = {
     "M15": 60,       # check every 1 min
@@ -209,6 +212,7 @@ class PaperTrader:
         logger.info("Poll interval: %ds | Max open trades: %d | Session: %s",
                      self.config.poll_interval, self.config.max_open_trades,
                      get_session_name())
+        self._log_progress()
         logger.info("-" * 60)
 
         try:
@@ -618,6 +622,7 @@ class PaperTrader:
                 meta["direction"].upper(), meta["pair"],
                 exit_price, realized_pnl, exit_reason,
             )
+            self._log_progress()
 
     def _get_active_pairs(self, session: str | None = None) -> list[str]:
         """Get the list of pairs to scan this cycle.
@@ -681,6 +686,22 @@ class PaperTrader:
             logger.warning("CORRECTION: %s — %s", correction.action.value, correction.detail)
             self.corrector.apply_correction(correction)
 
+    def _log_progress(self) -> None:
+        """Log paper trade progress toward the 200-trade target."""
+        try:
+            stats = self.perf_tracker.get_paper_trade_count()
+            total = stats["total"]
+            wins = stats["wins"]
+            pnl = stats["pnl"]
+            pct = total / PAPER_TRADE_TARGET * 100
+            win_rate = wins / total * 100 if total > 0 else 0
+            logger.info(
+                "PROGRESS: %d/%d trades (%.0f%%) | Win rate: %.0f%% | PnL: %s",
+                total, PAPER_TRADE_TARGET, pct, win_rate, format_pnl(pnl),
+            )
+        except Exception as e:
+            logger.warning("Failed to log progress: %s", e)
+
     def _shutdown(self) -> None:
         """Clean shutdown — log summary and disconnect."""
         elapsed = (datetime.now() - self.state.start_time).total_seconds()
@@ -705,6 +726,7 @@ class PaperTrader:
     def get_status(self) -> dict:
         """Get current status for display or API."""
         open_count = len(self.order_mgr.open_orders) if self.order_mgr else 0
+        progress = self.perf_tracker.get_paper_trade_count() if self.perf_tracker else {}
         return {
             "running": self._running,
             "cycles": self.state.cycles,
@@ -717,4 +739,9 @@ class PaperTrader:
             "uptime_seconds": (datetime.now() - self.state.start_time).total_seconds(),
             "active_pairs": self._get_active_pairs(),
             "enabled_signals": self._get_enabled_signal_types(),
+            "paper_trade_target": PAPER_TRADE_TARGET,
+            "paper_trades_completed": progress.get("total", 0),
+            "paper_trade_progress_pct": round(
+                progress.get("total", 0) / PAPER_TRADE_TARGET * 100, 1
+            ),
         }

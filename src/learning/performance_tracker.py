@@ -203,6 +203,23 @@ class PerformanceTracker:
                 ON trade_results(pair, signal_type, timeframe)
             """)
 
+    def get_paper_trade_count(self) -> dict:
+        """Return paper trade totals: count, wins, losses, total_pnl."""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), "
+                "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END), "
+                "COALESCE(SUM(pnl), 0) "
+                "FROM trade_results WHERE source='paper'"
+            ).fetchone()
+        return {
+            "total": row[0],
+            "wins": row[1] or 0,
+            "losses": row[2] or 0,
+            "pnl": round(row[3], 2),
+        }
+
     def record_trade(self, trade: dict, source: str = "backtest") -> None:
         """Record a single completed trade."""
         # Derive the session from the trade's timestamp when available;
