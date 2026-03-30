@@ -9,7 +9,7 @@ DATA_DIR = BASE_DIR / "data"
 LOG_DIR = BASE_DIR / "logs"
 
 # Risk Management
-RISK_PER_TRADE = 0.01       # 1% of account
+RISK_PER_TRADE = 0.02       # 2% of account
 MAX_DAILY_LOSS = 0.10       # 10% of account
 MAX_POSITIONS = None        # Unlimited within risk
 
