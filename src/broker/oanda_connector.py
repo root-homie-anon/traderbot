@@ -274,12 +274,16 @@ class OandaConnector(BrokerBase):
         )
 
         close_txn = resp.get("orderFillTransaction", {})
+        raw_units = int(float(close_txn.get("units", 0)))
+        # OANDA returns negative units for closing a buy, positive for closing a sell
+        # The original trade side is the opposite of the close direction
+        side = OrderSide.BUY if raw_units < 0 else OrderSide.SELL
         return Order(
             order_id=order_id,
             pair=close_txn.get("instrument", ""),
-            side=OrderSide.BUY,  # will be updated from trade
+            side=side,
             order_type=OrderType.MARKET,
-            units=abs(int(float(close_txn.get("units", 0)))),
+            units=abs(raw_units),
             status=OrderStatus.FILLED,
             fill_price=float(close_txn.get("price", 0)),
             pnl=float(close_txn.get("pl", 0)),
@@ -362,17 +366,28 @@ class OandaConnector(BrokerBase):
 
                 # Treat 502/503/504 as transient — retry instead of raising
                 if resp.status_code in (502, 503, 504):
+                    try:
+                        err_body = resp.json()
+                        err_msg = err_body.get("errorMessage", resp.text[:200])
+                    except Exception:
+                        err_msg = resp.text[:200]
                     logger.error(
                         "OANDA API error %d (transient): %s",
                         resp.status_code,
-                        resp.text[:200],
+                        err_msg,
                     )
                     raise requests.exceptions.ConnectionError(
                         f"Transient {resp.status_code} from OANDA"
                     )
 
                 if resp.status_code >= 400:
-                    logger.error("OANDA API error %d: %s", resp.status_code, resp.text)
+                    # Extract only safe fields — raw body may contain accountID/userID
+                    try:
+                        err_body = resp.json()
+                        err_msg = err_body.get("errorMessage", resp.text[:200])
+                    except Exception:
+                        err_msg = resp.text[:200]
+                    logger.error("OANDA API error %d: %s", resp.status_code, err_msg)
                     resp.raise_for_status()
 
                 try:

@@ -84,7 +84,10 @@ def detect_pullback_signals(
                 stop_dist = max(raw_stop_dist, min_stop)
                 stop_loss = current_price - stop_dist
                 risk = current_price - stop_loss
-                take_profit = swing_high + risk * 0.5  # Target beyond previous high
+                # Target: at least min_rr * risk above entry
+                natural_target = swing_high + risk * 0.5
+                min_target = current_price + risk * min_rr
+                take_profit = max(natural_target, min_target)
 
                 rr = (take_profit - current_price) / risk if risk > 0 else 0
                 if rr >= min_rr:
@@ -141,7 +144,9 @@ def detect_pullback_signals(
                 stop_dist = max(raw_stop_dist, min_stop)
                 stop_loss = current_price + stop_dist
                 risk = stop_loss - current_price
-                take_profit = swing_low - risk * 0.5
+                natural_target = swing_low - risk * 0.5
+                min_target = current_price - risk * min_rr
+                take_profit = min(natural_target, min_target)
 
                 rr = (current_price - take_profit) / risk if risk > 0 else 0
                 if rr >= min_rr:

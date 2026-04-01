@@ -61,10 +61,10 @@ WeightType = Literal["uniform", "exponential", "recent_only"]
 # Default half-life for exponential decay (hours).
 # A trade this many hours old receives weight 0.5 relative to a trade
 # recorded right now.
-DEFAULT_HALF_LIFE_HOURS: float = 3.0
+DEFAULT_HALF_LIFE_HOURS: float = 72.0
 
 # Default window for recent_only filtering (hours)
-DEFAULT_RECENT_ONLY_HOURS: float = 6.0
+DEFAULT_RECENT_ONLY_HOURS: float = 168.0
 
 
 @dataclass

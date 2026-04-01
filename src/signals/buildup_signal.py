@@ -40,7 +40,7 @@ def detect_buildup_signals(
 
     # Only look at the most recent buildup
     latest = buildups[-1]
-    if latest.index < len(df) - 3:
+    if latest.index < len(df) - 6:
         return signals  # buildup is too old
 
     # Define the consolidation zone
@@ -63,7 +63,7 @@ def detect_buildup_signals(
     # Bullish breakout
     if last["close"] > zone_high:
         breakout_size = last["close"] - zone_high
-        if breakout_size >= atr * 0.3:  # meaningful breakout
+        if breakout_size >= atr * 0.15:  # meaningful breakout
             stop_loss = zone_low - atr * 0.2
             risk = last["close"] - stop_loss
             take_profit = last["close"] + risk * min_rr

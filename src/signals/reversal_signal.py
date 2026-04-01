@@ -25,9 +25,9 @@ def detect_reversal_signals(
     df: pd.DataFrame,
     pair: str = "",
     timeframe: str = "",
-    sr_proximity_pct: float = 0.005,
+    sr_proximity_pct: float = 0.010,
     min_rr: float = 2.0,
-    lookback_bars: int = 3,
+    lookback_bars: int = 5,
 ) -> list[Signal]:
     """Scan for reversal setups at S/R levels.
 

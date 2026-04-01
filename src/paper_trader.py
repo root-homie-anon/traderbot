@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, date
 
-from src.broker.broker_base import OrderSide, OrderStatus
+from src.broker.broker_base import Order, OrderSide, OrderStatus, OrderType
 from src.broker.oanda_connector import OandaConnector
 from src.broker.order_manager import OrderManager
 from src.broker.trade_logger import TradeLogger
@@ -262,71 +262,22 @@ class PaperTrader:
         )
 
         for oid, meta in offline_closed.items():
-            try:
-                trades_resp = self.connector._request(
-                    "GET",
-                    f"/v3/accounts/{self.connector.account_id}/trades/{oid}",
-                )
-                trade_data = trades_resp.get("trade", {})
-                realized_pnl = float(trade_data.get("realizedPL", 0))
-                exit_price = float(trade_data.get("averageClosePrice", 0))
-            except Exception as e:
-                logger.warning(
-                    "Failed to fetch close details for offline trade %s (%s) — skipping: %s",
-                    oid, meta.get("pair", "unknown"), e,
-                )
+            details = self._fetch_close_details(oid, meta.get("pair", "unknown"))
+            if not details:
                 continue
-
-            if exit_price == 0.0:
-                logger.warning(
-                    "Offline trade %s (%s) returned no averageClosePrice — skipping",
-                    oid, meta.get("pair", "unknown"),
-                )
-                continue
-
-            # Determine exit reason from price proximity to SL/TP
-            sl = meta.get("stop_loss", 0.0)
-            tp = meta.get("take_profit", 0.0)
-            if sl > 0 and tp > 0:
-                sl_dist = abs(exit_price - sl)
-                tp_dist = abs(exit_price - tp)
-                exit_reason = "stop_loss" if sl_dist < tp_dist else "take_profit"
-            else:
-                exit_reason = "closed"
-
-            entry = meta.get("entry_price", 0.0)
-            risk_amount = abs(entry - sl) if sl > 0 else 0.0
 
             try:
-                self.perf_tracker.record_trade({
-                    "timestamp": datetime.now().isoformat(),
-                    "pair": meta.get("pair", ""),
-                    "signal_type": meta.get("signal_type", "unknown"),
-                    "timeframe": meta.get("timeframe", ""),
-                    "direction": meta.get("direction", ""),
-                    "entry_price": entry,
-                    "exit_price": exit_price,
-                    "stop_loss": sl,
-                    "take_profit": tp,
-                    "pnl": realized_pnl,
-                    "risk_amount": risk_amount,
-                    "exit_reason": exit_reason,
-                    "quality_score": meta.get("quality_score", 0.0),
-                    "confluence_level": meta.get("confluence_level", 0.0),
-                }, source="paper")
+                self._record_closed_trade(oid, meta, details)
             except Exception as e:
                 logger.warning(
-                    "Failed to record offline trade %s to performance tracker: %s", oid, e,
+                    "Failed to record offline trade %s: %s", oid, e,
                 )
                 continue
-
-            self.trade_logger.delete_signal_meta(oid)
-            self.state.total_pnl += realized_pnl
 
             logger.info(
                 "OFFLINE TRADE RECONCILED: %s %s | exit=%.5f | PnL=%.2f | reason=%s",
                 meta.get("direction", "").upper(), meta.get("pair", ""),
-                exit_price, realized_pnl, exit_reason,
+                details["exit_price"], details["realized_pnl"], details["exit_reason"],
             )
 
     def _run_loop(self) -> None:
@@ -356,6 +307,19 @@ class PaperTrader:
             self.state.current_day = today
             if self.order_mgr:
                 self.order_mgr.reset_daily()
+                # Re-sync balance with broker to prevent drift from swaps/fees
+                try:
+                    account = self.connector.get_account_info()
+                    old_balance = self.order_mgr.balance
+                    self.order_mgr.balance = account.balance
+                    if abs(old_balance - account.balance) > 0.01:
+                        logger.info(
+                            "Balance re-synced: %.2f → %.2f (drift: %+.2f)",
+                            old_balance, account.balance,
+                            account.balance - old_balance,
+                        )
+                except Exception as e:
+                    logger.warning("Failed to re-sync balance: %s", e)
             logger.info("--- New trading day: %s ---", today)
 
         # Sync open trades and record any that closed
@@ -526,6 +490,98 @@ class PaperTrader:
             self.state.orders_rejected += 1
             logger.debug("Order rejected: %s — %s", signal.pair, result.reason)
 
+    def _fetch_close_details(self, oid: str, pair: str) -> dict | None:
+        """Fetch close details for a trade from OANDA.
+
+        Returns dict with realized_pnl, exit_price, exit_reason, or None on failure.
+        """
+        try:
+            trades_resp = self.connector._request(
+                "GET",
+                f"/v3/accounts/{self.connector.account_id}/trades/{oid}",
+            )
+            trade_data = trades_resp.get("trade", {})
+            realized_pnl = float(trade_data.get("realizedPL", 0))
+            exit_price = float(trade_data.get("averageClosePrice", 0))
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch close details for trade %s (%s): %s", oid, pair, e,
+            )
+            return None
+
+        if exit_price == 0.0:
+            logger.warning("Trade %s (%s) returned no averageClosePrice", oid, pair)
+            return None
+
+        # Determine exit reason from OANDA order states
+        sl_order = trade_data.get("stopLossOrder", {})
+        tp_order = trade_data.get("takeProfitOrder", {})
+        sl_state = sl_order.get("state", "")
+        tp_state = tp_order.get("state", "")
+
+        if tp_state in ("FILLED", "TRIGGERED"):
+            exit_reason = "take_profit"
+        elif sl_state in ("FILLED", "TRIGGERED"):
+            exit_reason = "stop_loss"
+        else:
+            exit_reason = "closed"
+
+        return {
+            "realized_pnl": realized_pnl,
+            "exit_price": exit_price,
+            "exit_reason": exit_reason,
+        }
+
+    def _record_closed_trade(self, oid: str, meta: dict, details: dict) -> None:
+        """Record a closed trade to the performance tracker and trade logger."""
+        exit_price = details["exit_price"]
+        realized_pnl = details["realized_pnl"]
+        exit_reason = details["exit_reason"]
+
+        self.state.total_pnl += realized_pnl
+        risk_amount = abs(meta["entry_price"] - meta["stop_loss"])
+
+        self.perf_tracker.record_trade({
+            "timestamp": datetime.now().isoformat(),
+            "pair": meta["pair"],
+            "signal_type": meta["signal_type"],
+            "timeframe": meta["timeframe"],
+            "direction": meta["direction"],
+            "entry_price": meta["entry_price"],
+            "exit_price": exit_price,
+            "stop_loss": meta["stop_loss"],
+            "take_profit": meta["take_profit"],
+            "pnl": realized_pnl,
+            "risk_amount": risk_amount,
+            "exit_reason": exit_reason,
+            "quality_score": meta["quality_score"],
+            "confluence_level": meta["confluence_level"],
+        }, source="paper")
+
+        self.trade_logger.delete_signal_meta(oid)
+
+        side = OrderSide.BUY if meta["direction"] == "buy" else OrderSide.SELL
+        closed_order = Order(
+            order_id=oid,
+            pair=meta["pair"],
+            side=side,
+            order_type=OrderType.MARKET,
+            units=0,
+            fill_price=exit_price,
+            stop_loss=meta["stop_loss"],
+            take_profit=meta["take_profit"],
+            status=OrderStatus.FILLED,
+            pnl=realized_pnl,
+        )
+        self.trade_logger.log_order(closed_order, event="closed")
+
+        logger.info(
+            "TRADE CLOSED: %s %s | exit=%.5f | PnL=%.2f | reason=%s",
+            meta["direction"].upper(), meta["pair"],
+            exit_price, realized_pnl, exit_reason,
+        )
+        self._log_progress()
+
     def _check_closed_trades(self) -> None:
         """Detect trades closed by SL/TP since last sync and record them."""
         # Snapshot order IDs before sync
@@ -545,84 +601,11 @@ class PaperTrader:
                 logger.info("Trade %s closed (no signal metadata)", oid)
                 continue
 
-            # Fetch actual close details from OANDA transaction history
-            try:
-                trades_resp = self.connector._request(
-                    "GET",
-                    f"/v3/accounts/{self.connector.account_id}/trades/{oid}",
-                )
-                trade_data = trades_resp.get("trade", {})
-                realized_pnl = float(trade_data.get("realizedPL", 0))
-                exit_price = float(trade_data.get("averageClosePrice", 0))
-            except Exception as e:
-                logger.warning(
-                    "Failed to fetch close details for trade %s (%s) — skipping outcome record: %s",
-                    oid, meta.get("pair", "unknown"), e,
-                )
+            details = self._fetch_close_details(oid, meta.get("pair", "unknown"))
+            if not details:
                 continue
 
-            if exit_price == 0.0:
-                logger.warning(
-                    "Trade %s (%s) returned no averageClosePrice — skipping outcome record",
-                    oid, meta.get("pair", "unknown"),
-                )
-                continue
-
-            self.state.total_pnl += realized_pnl
-
-            # Determine exit reason
-            if exit_price > 0 and meta["stop_loss"] > 0 and meta["take_profit"] > 0:
-                sl_dist = abs(exit_price - meta["stop_loss"])
-                tp_dist = abs(exit_price - meta["take_profit"])
-                exit_reason = "stop_loss" if sl_dist < tp_dist else "take_profit"
-            else:
-                exit_reason = "closed"
-
-            risk_amount = abs(meta["entry_price"] - meta["stop_loss"]) * 1  # per unit
-
-            # Record to performance tracker for learning
-            self.perf_tracker.record_trade({
-                "timestamp": datetime.now().isoformat(),
-                "pair": meta["pair"],
-                "signal_type": meta["signal_type"],
-                "timeframe": meta["timeframe"],
-                "direction": meta["direction"],
-                "entry_price": meta["entry_price"],
-                "exit_price": exit_price,
-                "stop_loss": meta["stop_loss"],
-                "take_profit": meta["take_profit"],
-                "pnl": realized_pnl,
-                "risk_amount": risk_amount,
-                "exit_reason": exit_reason,
-                "quality_score": meta["quality_score"],
-                "confluence_level": meta["confluence_level"],
-            }, source="paper")
-
-            # Remove persisted signal metadata now that the outcome is recorded
-            self.trade_logger.delete_signal_meta(oid)
-
-            # Log to trade logger
-            from src.broker.broker_base import Order, OrderSide, OrderType, OrderStatus
-            closed_order = Order(
-                order_id=oid,
-                pair=meta["pair"],
-                side=OrderSide.BUY if meta["direction"] == "buy" else OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                units=0,
-                fill_price=exit_price,
-                stop_loss=meta["stop_loss"],
-                take_profit=meta["take_profit"],
-                status=OrderStatus.FILLED,
-                pnl=realized_pnl,
-            )
-            self.trade_logger.log_order(closed_order, event="closed")
-
-            logger.info(
-                "TRADE CLOSED: %s %s | exit=%.5f | PnL=%.2f | reason=%s",
-                meta["direction"].upper(), meta["pair"],
-                exit_price, realized_pnl, exit_reason,
-            )
-            self._log_progress()
+            self._record_closed_trade(oid, meta, details)
 
     def _get_active_pairs(self, session: str | None = None) -> list[str]:
         """Get the list of pairs to scan this cycle.

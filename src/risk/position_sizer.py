@@ -34,8 +34,9 @@ def calculate_position_size(
         return {"position_size": 0, "risk_amount": risk_amount, "stop_pips": round(stop_distance / pip_value, 1)}
 
     stop_pips = stop_distance / pip_value
-    # Position size = risk_amount / (stop_pips * pip_value)
-    # For standard forex: 1 unit = $0.0001 per pip
+    # Position size = risk_amount / stop_distance
+    # This works for all pairs because stop_distance is already in price units.
+    # 1 OANDA unit of any pair profits/losses by the price movement directly.
     position_size = risk_amount / stop_distance
 
     return {

@@ -175,7 +175,7 @@ class TestBacktester:
     def test_backtest_config_defaults(self):
         config = BacktestConfig()
         assert config.initial_balance == 300.0
-        assert config.risk_per_trade == 0.01
+        assert config.risk_per_trade == 0.02
         assert config.max_open_trades == 3
 
     def test_backtest_no_trades_on_short_data(self):

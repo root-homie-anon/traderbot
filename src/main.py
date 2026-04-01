@@ -109,6 +109,11 @@ def _run_paper(args):
     )
 
     if args.pairs:
+        from src.utils.validators import validate_pair
+        for p in args.pairs:
+            if not validate_pair(p):
+                logger.error("Invalid pair format: %s (expected XXX_YYY)", p)
+                return
         config.pairs = args.pairs
     if args.timeframes:
         config.timeframes = args.timeframes
