@@ -28,6 +28,10 @@ from src.analysis.confluence import calculate_confluence
 from src.analysis.trend_strength import calculate_trend_strength
 from src.analysis.market_structure import classify_structure
 from src.analysis.regime_detector import RegimeDetector
+from src.analysis.order_book import OrderBookAnalyzer
+from src.analysis.mtf_confirmation import MTFAnalyzer
+from src.data.economic_calendar import EconomicCalendar
+from src.data.cot_data import COTAnalyzer
 from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
 from src.config import (
@@ -123,6 +127,10 @@ class PaperTrader:
         self.pair_selector: PairSelector | None = None
 
         self.regime_detector = RegimeDetector()
+        self.order_book: OrderBookAnalyzer | None = None
+        self.mtf: MTFAnalyzer | None = None
+        self.calendar = EconomicCalendar()
+        self.cot = COTAnalyzer()
         self.state = PaperTraderState()
         self._running = False
         # Map order_id -> signal metadata for recording closed trades
@@ -178,6 +186,12 @@ class PaperTrader:
         self.pair_selector = PairSelector(
             self.perf_tracker, max_pairs=TOP_PAIRS
         ) if self.config.auto_pair_selection else None
+
+        # Initialize external data sources
+        self.order_book = OrderBookAnalyzer(self.connector)
+        self.mtf = MTFAnalyzer(self.connector)
+        self.calendar.refresh()
+        self.cot.refresh()
 
         # Backfill signal metadata for trades already open at the broker
         # so early TP and learning can track them
@@ -337,12 +351,22 @@ class PaperTrader:
         if self.config.use_learning and self.adaptive:
             self.adaptive.advance_cycle()
 
+        # Refresh external data sources periodically
+        if self.state.cycles % 30 == 0:  # Every ~60 min at 120s poll
+            self.calendar.refresh()
+        if self.state.cycles % 360 == 0:  # Every ~12 hours
+            self.cot.refresh()
+
         # Select pairs
         pairs = self._get_active_pairs(session=current_session)
 
-        # Scan for signals
+        # Scan for signals, skipping pairs in news blackout
         all_signals: list[Signal] = []
         for pair in pairs:
+            blocked, reason = self.calendar.is_blackout(pair)
+            if blocked:
+                logger.debug("Skipping %s: %s", pair, reason)
+                continue
             for tf in self.config.timeframes:
                 signals = self._scan_pair(pair, tf, session=current_session)
                 all_signals.extend(signals)
@@ -449,6 +473,28 @@ class PaperTrader:
                     signal.signal_type.value, pair, timeframe, source="paper",
                 )
                 signal.quality_score *= adj.multiplier
+
+            # Multi-timeframe confirmation
+            if self.mtf:
+                mtf_result = self.mtf.confirm(
+                    pair, signal.direction.value, cycle=self.state.cycles,
+                )
+                signal.quality_score *= mtf_result.quality_multiplier
+
+            # OANDA order book — contrarian sentiment boost
+            if self.order_book:
+                ob_aligned, ob_strength = self.order_book.is_aligned(
+                    pair, signal.direction.value, cycle=self.state.cycles,
+                )
+                if ob_aligned and ob_strength >= 20:
+                    signal.quality_score *= 1.0 + (ob_strength / 100) * 0.15
+
+            # COT institutional positioning
+            cot_aligned, cot_strength = self.cot.is_aligned(
+                pair, signal.direction.value,
+            )
+            if cot_aligned and cot_strength >= 20:
+                signal.quality_score *= 1.0 + (cot_strength / 100) * 0.10
 
             if signal.quality_score >= self.config.min_quality_score:
                 scored.append(signal)
