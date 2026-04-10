@@ -34,6 +34,7 @@ from src.data.economic_calendar import EconomicCalendar
 from src.data.cot_data import COTAnalyzer
 from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
+from src.utils.helpers import get_pip_value
 from src.config import (
     RISK_PER_TRADE, QUALITY_SCORE_MIN, CONFLUENCE_MIN, TIMEFRAMES, TOP_PAIRS, DATA_DIR,
 )
@@ -194,21 +195,32 @@ class PaperTrader:
         self.cot.refresh()
 
         # Backfill signal metadata for trades already open at the broker
-        # so early TP and learning can track them
+        # so early TP and learning can track them.
+        # Load persisted metadata first so we use real signal info instead of
+        # sentinel "unknown" values for trades this bot originally placed.
+        try:
+            persisted_meta = self.trade_logger.load_pending_signal_meta()
+        except Exception as e:
+            logger.warning("Failed to load pending signal metadata for backfill: %s", e)
+            persisted_meta = {}
+
         try:
             existing = self.connector.get_open_trades()
             for t in existing:
-                self._signal_meta[t.order_id] = {
-                    "signal_type": "unknown",
-                    "timeframe": "H1",
-                    "quality_score": 0,
-                    "confluence_level": 0,
-                    "entry_price": t.fill_price,
-                    "stop_loss": t.stop_loss,
-                    "take_profit": t.take_profit,
-                    "direction": t.side.value,
-                    "pair": t.pair,
-                }
+                if t.order_id in persisted_meta:
+                    self._signal_meta[t.order_id] = persisted_meta[t.order_id]
+                else:
+                    self._signal_meta[t.order_id] = {
+                        "signal_type": "unknown",
+                        "timeframe": "H1",
+                        "quality_score": 0,
+                        "confluence_level": 0,
+                        "entry_price": t.fill_price,
+                        "stop_loss": t.stop_loss,
+                        "take_profit": t.take_profit,
+                        "direction": t.side.value,
+                        "pair": t.pair,
+                    }
                 self.order_mgr.open_orders[t.order_id] = t
             if existing:
                 logger.info("Picked up %d existing trades from broker", len(existing))
@@ -509,6 +521,16 @@ class PaperTrader:
         if result.success:
             self.state.orders_placed += 1
             self.trade_logger.log_order(result.order, event="placed")
+            # Compute the actual dollar risk amount using the same inputs
+            # the position sizer used, so _record_closed_trade gets dollars
+            # instead of raw price distance.
+            pip_value = get_pip_value(signal.pair)
+            risk_mult = (
+                self.order_mgr.drawdown_mgr.risk_multiplier()
+                if self.order_mgr.use_drawdown_scaling
+                else 1.0
+            )
+            dollar_risk = self.order_mgr.balance * self.config.risk_per_trade * risk_mult
             meta = {
                 "signal_type": signal.signal_type.value,
                 "timeframe": signal.timeframe,
@@ -519,6 +541,7 @@ class PaperTrader:
                 "take_profit": signal.take_profit,
                 "direction": signal.direction.value,
                 "pair": signal.pair,
+                "risk_amount": round(dollar_risk, 2),
             }
             self._signal_meta[result.order.order_id] = meta
             self.trade_logger.save_signal_meta(result.order.order_id, meta)
@@ -585,7 +608,11 @@ class PaperTrader:
         exit_reason = details["exit_reason"]
 
         self.state.total_pnl += realized_pnl
-        risk_amount = abs(meta["entry_price"] - meta["stop_loss"])
+        # Use the dollar risk stored at order placement time; fall back to
+        # balance * risk_pct if metadata predates the fix.
+        risk_amount = meta.get("risk_amount") or (
+            self.order_mgr.balance * self.config.risk_per_trade
+        )
 
         self.perf_tracker.record_trade({
             "timestamp": datetime.now().isoformat(),
