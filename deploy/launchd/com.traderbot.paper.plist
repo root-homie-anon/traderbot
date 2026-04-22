@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.traderbot.paper</string>
+
+    <!--
+        Uses a wrapper script so .env is sourced before launch.
+        launchd strips the user environment; the bot reads OANDA creds from os.environ
+        and has no load_dotenv() call, so direct python invocation would fail.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/macmini/projects/traderbot/deploy/launchd/start-paper.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macmini/projects/traderbot</string>
+
+    <!-- Start Sunday at 17:00 local time. Weekday=0 is Sunday in launchd. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>17</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!--
+        KeepAlive only on non-zero exit (crash/OANDA failure).
+        SuccessfulExit=false means: do NOT restart when exit code is 0.
+        This lets the Friday stop-script trigger a clean shutdown (exit 0)
+        without KeepAlive bouncing it back up.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- 5 minutes between restart attempts — avoids hammering OANDA on sustained connection failures -->
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+
+    <!-- Do NOT auto-start on login/reboot — only fire on the calendar trigger -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/macmini/projects/traderbot/logs/launchd-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/macmini/projects/traderbot/logs/launchd-stderr.log</string>
+</dict>
+</plist>

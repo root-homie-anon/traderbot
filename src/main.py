@@ -119,6 +119,20 @@ def _run_paper(args):
         config.timeframes = args.timeframes
 
     trader = PaperTrader(config=config)
+
+    # Wire SIGTERM/SIGINT directly to trader.stop() so the bot exits cleanly
+    # after the current cycle rather than ignoring the signal.
+    # The module-level _shutdown_requested flag is kept for informational logging
+    # but is not sufficient on its own — trader._running must be cleared.
+    def _handle_paper_signal(signum: int, frame) -> None:  # type: ignore[type-arg]
+        global _shutdown_requested
+        _shutdown_requested = True
+        logger.info("Shutdown signal received (%s) — stopping after current cycle", signum)
+        trader.stop()
+
+    signal.signal(signal.SIGTERM, _handle_paper_signal)
+    signal.signal(signal.SIGINT, _handle_paper_signal)
+
     try:
         trader.start()
     except Exception as e:
