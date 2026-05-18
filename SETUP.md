@@ -113,7 +113,7 @@ Create `data/config.json`:
   },
   
   "trading": {
-    "risk_per_trade": 0.01,
+    "risk_per_trade": 0.02,
     "max_daily_loss": 0.10,
     "max_open_positions": null,
     "quality_score_min": 50,
@@ -277,12 +277,12 @@ Change `config.json`:
 ### Start Live Bot
 
 ```bash
-python src/main.py --mode live --pairs EUR_USD GBP_USD --risk 0.01
+python src/main.py --mode live --pairs EUR_USD GBP_USD --risk 0.02
 ```
 
 **Safety Features:**
 - 10% daily loss limit (auto-stops)
-- 1% risk per trade (limit losses)
+- 2% risk per trade (limit losses)
 - Position size capped
 - All trades logged
 - Email alerts (coming soon)
@@ -400,7 +400,7 @@ python notebooks/live_metrics.ipynb
 - `mode` - "paper" (simulated) or "live" (real money)
 
 ### trading
-- `risk_per_trade` - 0.01 (1%), adjustable 0.005-0.05
+- `risk_per_trade` - 0.02 (2%), adjustable 0.005-0.05
 - `max_daily_loss` - 0.10 (10%), adjustable
 - `max_open_positions` - null (unlimited), or set to number
 - `quality_score_min` - 50 (0-100 scale, higher = stricter)

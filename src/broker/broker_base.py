@@ -111,3 +111,10 @@ class BrokerBase(ABC):
     @abstractmethod
     def get_spread(self, pair: str) -> float:
         """Get the current spread in price units for a pair."""
+
+    def get_mid_price(self, pair: str) -> float:
+        """Mid price for a pair (account-currency conversion for cross pairs).
+
+        Default returns 0.0 — broker-specific implementations override.
+        """
+        return 0.0

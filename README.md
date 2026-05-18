@@ -114,7 +114,7 @@ Each signal is scored 0-100 based on:
 
 ## Risk Management
 
-- 1% risk per trade (configurable)
+- 2% risk per trade (configurable)
 - Position sizing based on stop distance
 - 10% daily loss limit with automatic lockout
 - Drawdown scaling: position size reduced to 0.25x at 20%+ drawdown or 4+ consecutive losses
@@ -134,7 +134,7 @@ Each signal is scored 0-100 based on:
 ## Configuration
 
 ```python
-RISK_PER_TRADE = 0.01       # 1% of account
+RISK_PER_TRADE = 0.02       # 2% of account
 MAX_DAILY_LOSS = 0.10       # 10% of account
 CONFLUENCE_MIN = 1          # Min confluence level
 TREND_STRENGTH_MIN = 40     # Minimum trend strength (0-100)

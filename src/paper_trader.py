@@ -18,6 +18,7 @@ from src.learning.performance_tracker import PerformanceTracker
 from src.learning.adaptive_engine import AdaptiveEngine
 from src.learning.self_corrector import SelfCorrector, ActionType
 from src.learning.pair_selector import PairSelector
+from src.learning.cooldown import CooldownGuard
 from src.signals.signal_base import Signal, SignalDirection
 from src.signals.reversal_signal import detect_reversal_signals
 from src.signals.pullback_signal import detect_pullback_signals
@@ -35,6 +36,7 @@ from src.data.cot_data import COTAnalyzer
 from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
 from src.utils.helpers import get_pip_value
+from pathlib import Path
 from src.config import (
     RISK_PER_TRADE, QUALITY_SCORE_MIN, CONFLUENCE_MIN, TIMEFRAMES, TOP_PAIRS, DATA_DIR,
 )
@@ -136,6 +138,9 @@ class PaperTrader:
         self._running = False
         # Map order_id -> signal metadata for recording closed trades
         self._signal_meta: dict[str, dict] = {}
+        # Re-entry cooldown: locks (pair, signal_type, direction) after a stop-out
+        self.cooldown_guard = CooldownGuard(state_path=Path("state/cooldowns.json"))
+        self.cooldown_guard.load()
 
     def start(self) -> None:
         """Connect and run the paper trading loop."""
@@ -509,6 +514,18 @@ class PaperTrader:
                 signal.quality_score *= 1.0 + (cot_strength / 100) * 0.10
 
             if signal.quality_score >= self.config.min_quality_score:
+                locked, unlock_at = self.cooldown_guard.is_locked(
+                    signal.pair, signal.signal_type.value, signal.direction.value,
+                )
+                if locked:
+                    logger.info(
+                        "COOLDOWN SKIP: %s %s %s locked until %s",
+                        signal.pair, signal.signal_type.value,
+                        signal.direction.value,
+                        unlock_at.isoformat(timespec="minutes") if unlock_at else "?",
+                    )
+                    self.state.orders_rejected += 1
+                    continue
                 scored.append(signal)
 
         self.state.signals_generated += len(scored)
@@ -653,6 +670,16 @@ class PaperTrader:
             meta["direction"].upper(), meta["pair"],
             exit_price, realized_pnl, exit_reason,
         )
+
+        if exit_reason == "stop_loss":
+            self.cooldown_guard.register_stopout(
+                pair=meta["pair"],
+                signal_type=meta["signal_type"],
+                direction=meta["direction"],
+                timeframe=meta.get("timeframe", "H1"),
+                order_id=oid,
+            )
+
         self._log_progress()
 
     def _check_closed_trades(self) -> None:

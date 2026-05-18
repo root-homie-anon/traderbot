@@ -14,7 +14,7 @@ from src.signals.quality_scorer import score_signal
 from src.analysis.confluence import calculate_confluence
 from src.analysis.trend_strength import calculate_trend_strength
 from src.analysis.market_structure import classify_structure
-from src.risk.position_sizer import calculate_position_size
+from src.risk.position_sizer import calculate_position_size, quote_to_account_rate
 from src.risk.stop_validator import validate_stop
 from src.risk.daily_limits import DailyLimitTracker
 from src.risk.drawdown_manager import DrawdownManager
@@ -180,12 +180,17 @@ def run_backtest(
 
             # Position sizing with drawdown scaling
             risk_mult = drawdown_mgr.risk_multiplier() if config.use_drawdown_scaling else 1.0
+            rate = quote_to_account_rate(signal.pair, signal.entry_price)
+            if rate is None:
+                # Cross pair without external rate feed — backtester can't price it
+                continue
             sizing = calculate_position_size(
                 account_balance=balance,
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
                 risk_pct=config.risk_per_trade * risk_mult,
                 pip_value=pip_value,
+                quote_to_account_rate=rate,
             )
 
             if sizing["position_size"] <= 0:
