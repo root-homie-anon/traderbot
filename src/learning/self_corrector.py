@@ -6,7 +6,9 @@ thresholds, or flagging pairs for removal.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
 
 from src.learning.performance_tracker import PerformanceTracker, CONSECUTIVE_LOSS_LIMIT_DEFAULT
@@ -42,6 +44,7 @@ RE_ENABLE_WIN_RATE = 0.50     # re-enable if recovered above 50%
 REMOVE_PAIR_WIN_RATE = 0.25   # drop pair if below 25%
 MIN_TRADES = 50               # minimum trades before acting
 CONSECUTIVE_LOSS_LIMIT = CONSECUTIVE_LOSS_LIMIT_DEFAULT  # flag after 5 consecutive losses
+PROBATION_HOURS = 168         # a disable lapses after 7 days
 
 
 class SelfCorrector:
@@ -51,6 +54,17 @@ class SelfCorrector:
     - ``disabled_signals``: global set[str] — disabled in all sessions.
     - ``disabled_signals_by_session``: set[tuple[str, str]] — pairs of
       (signal_type, session) disabled only in that session.
+
+    Every disable is a time-limited suspension, not a permanent one. A disabled
+    signal type stops trading, so its trade count freezes — any re-enable rule
+    gated on accumulating more trades can never be satisfied, and the disable
+    becomes irreversible. Probation breaks that: the suspension lapses after
+    ``probation_hours`` and the type must re-earn its place on fresh results.
+
+    For the same reason, consecutive-loss checks only look at trades recorded
+    after the type was last enabled. Otherwise the frozen losing streak that
+    caused the disable is still the newest history when probation ends, and the
+    type is disabled again before it can place a single trade.
 
     Usage:
         corrector = SelfCorrector(tracker)
@@ -64,13 +78,32 @@ class SelfCorrector:
         tracker: PerformanceTracker,
         min_trades: int = MIN_TRADES,
         disabled_signals: set[str] | None = None,
+        probation_hours: float = PROBATION_HOURS,
+        clock: Callable[[], datetime] | None = None,
     ):
         self.tracker = tracker
         self.min_trades = min_trades
+        self.probation_hours = probation_hours
+        self._clock = clock or datetime.now
         # Global disables (signal_type)
         self.disabled_signals: set[str] = disabled_signals or set()
         # Per-session disables (signal_type, session)
         self.disabled_signals_by_session: set[tuple[str, str]] = set()
+
+        now = self._clock()
+        # When each active disable started, for probation expiry.
+        self._disabled_at: dict[str, datetime] = {
+            sig_type: now for sig_type in self.disabled_signals
+        }
+        self._disabled_at_by_session: dict[tuple[str, str], datetime] = {}
+        # Streaks are counted from the last enable. Defaulting to construction
+        # time means history predating this run cannot trigger a disable before
+        # the run has produced any trades of its own.
+        self._enabled_at: dict[str, datetime] = {}
+        self._default_streak_start = now
+        # When risk was last reduced on a pair, so the verdict is not re-emitted
+        # on every cycle for as long as the streak sits in the window.
+        self._risk_reduced_at: dict[str, datetime] = {}
 
     def evaluate(
         self,
@@ -94,6 +127,7 @@ class SelfCorrector:
 
         corrections: list[Correction] = []
 
+        corrections.extend(self._check_probation_expiry())
         corrections.extend(
             self._check_signal_types(signal_types, source, last_n, session)
         )
@@ -106,6 +140,39 @@ class SelfCorrector:
         corrections.extend(
             self._check_consecutive_losses_pairs(pairs, source)
         )
+
+        return corrections
+
+    def _check_probation_expiry(self) -> list[Correction]:
+        """Re-enable signal types whose suspension has served its full term."""
+        now = self._clock()
+        probation = timedelta(hours=self.probation_hours)
+        corrections = []
+
+        for sig_type, disabled_at in self._disabled_at.items():
+            if now - disabled_at >= probation:
+                corrections.append(Correction(
+                    action=ActionType.RE_ENABLE_SIGNAL,
+                    target=sig_type,
+                    detail=(
+                        f"{sig_type} served {self.probation_hours:.0f}h probation "
+                        f"— re-enabling on trial"
+                    ),
+                    severity="warning",
+                ))
+
+        for (sig_type, sess), disabled_at in self._disabled_at_by_session.items():
+            if now - disabled_at >= probation:
+                corrections.append(Correction(
+                    action=ActionType.RE_ENABLE_SIGNAL,
+                    target=sig_type,
+                    detail=(
+                        f"{sig_type} served {self.probation_hours:.0f}h probation "
+                        f"in {sess} — re-enabling on trial"
+                    ),
+                    severity="warning",
+                    session=sess,
+                ))
 
         return corrections
 
@@ -230,6 +297,7 @@ class SelfCorrector:
                 signal_type=sig_type,
                 source=source,
                 last_n=CONSECUTIVE_LOSS_LIMIT,
+                since=self._streak_start(sig_type),
             )
 
             # Need a full window of trades before acting
@@ -260,13 +328,25 @@ class SelfCorrector:
         Uses REDUCE_RISK rather than REMOVE_PAIR so it fires faster than
         the aggregate win-rate check, giving the system a chance to pull
         back before enough data accumulates for a full removal decision.
+
+        A streak stays in the window until new trades push it out, so the
+        correction is latched for the probation period once acted on. Without
+        that, a pair that has stopped trading re-emits the same verdict every
+        cycle forever.
         """
+        now = self._clock()
+        probation = timedelta(hours=self.probation_hours)
         corrections = []
         for pair in pairs:
+            reduced_at = self._risk_reduced_at.get(pair)
+            if reduced_at and now - reduced_at < probation:
+                continue
+
             outcomes = self.tracker.get_recent_outcomes(
                 pair=pair,
                 source=source,
                 last_n=CONSECUTIVE_LOSS_LIMIT,
+                since=self._streak_start(pair),
             )
 
             if len(outcomes) < CONSECUTIVE_LOSS_LIMIT:
@@ -286,34 +366,48 @@ class SelfCorrector:
 
         return corrections
 
+    def _streak_start(self, target: str) -> datetime:
+        """Return the moment consecutive-loss counting should start for a target."""
+        return self._enabled_at.get(target, self._default_streak_start)
+
     def apply_correction(self, correction: Correction) -> None:
         """Apply a correction to the corrector's internal state."""
+        now = self._clock()
+
         if correction.action == ActionType.DISABLE_SIGNAL:
             if correction.session:
-                self.disabled_signals_by_session.add(
-                    (correction.target, correction.session)
-                )
+                key = (correction.target, correction.session)
+                self.disabled_signals_by_session.add(key)
+                self._disabled_at_by_session[key] = now
                 logger.warning(
-                    "Disabled signal type: %s in %s — %s",
-                    correction.target, correction.session, correction.detail,
+                    "Disabled signal type: %s in %s for %.0fh — %s",
+                    correction.target, correction.session,
+                    self.probation_hours, correction.detail,
                 )
             else:
                 self.disabled_signals.add(correction.target)
+                self._disabled_at[correction.target] = now
                 logger.warning(
-                    "Disabled signal type: %s (global) — %s",
-                    correction.target, correction.detail,
+                    "Disabled signal type: %s (global) for %.0fh — %s",
+                    correction.target, self.probation_hours, correction.detail,
                 )
+        elif correction.action == ActionType.REDUCE_RISK:
+            self._risk_reduced_at[correction.target] = now
         elif correction.action == ActionType.RE_ENABLE_SIGNAL:
+            # Reset the streak window so the losses that caused the disable
+            # cannot immediately trigger another one.
+            self._enabled_at[correction.target] = now
             if correction.session:
-                self.disabled_signals_by_session.discard(
-                    (correction.target, correction.session)
-                )
+                key = (correction.target, correction.session)
+                self.disabled_signals_by_session.discard(key)
+                self._disabled_at_by_session.pop(key, None)
                 logger.info(
                     "Re-enabled signal type: %s in %s — %s",
                     correction.target, correction.session, correction.detail,
                 )
             else:
                 self.disabled_signals.discard(correction.target)
+                self._disabled_at.pop(correction.target, None)
                 logger.info(
                     "Re-enabled signal type: %s (global) — %s",
                     correction.target, correction.detail,

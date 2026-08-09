@@ -399,10 +399,13 @@ class PerformanceTracker:
         pair: str | None = None,
         source: str | None = None,
         last_n: int = CONSECUTIVE_LOSS_LIMIT_DEFAULT,
+        since: datetime | None = None,
     ) -> list[bool]:
         """Return the last N trade outcomes as booleans (True = win) in oldest-first order.
 
-        Used by the self-corrector to detect consecutive loss streaks.
+        Used by the self-corrector to detect consecutive loss streaks. ``since``
+        restricts the window to trades recorded after that moment, so a streak
+        that is already frozen in history cannot keep triggering corrections.
         """
         conditions = []
         params: list = []
@@ -416,6 +419,9 @@ class PerformanceTracker:
         if source:
             conditions.append("source = ?")
             params.append(source)
+        if since:
+            conditions.append("timestamp > ?")
+            params.append(since.isoformat())
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"""
