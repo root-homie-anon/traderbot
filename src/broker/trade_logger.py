@@ -62,9 +62,21 @@ class TradeLogger:
                     confluence_level REAL NOT NULL DEFAULT 0,
                     entry_price REAL NOT NULL DEFAULT 0,
                     stop_loss REAL NOT NULL DEFAULT 0,
-                    take_profit REAL NOT NULL DEFAULT 0
+                    take_profit REAL NOT NULL DEFAULT 0,
+                    risk_amount REAL NOT NULL DEFAULT 0
                 )
             """)
+            # risk_amount was added after the table shipped. Without it, a trade
+            # held across a restart loses the dollar risk it was sized on and
+            # gets re-derived from the *current* risk setting, corrupting every
+            # R-multiple computed from it.
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(signal_meta)")
+            }
+            if "risk_amount" not in columns:
+                conn.execute(
+                    "ALTER TABLE signal_meta ADD COLUMN risk_amount REAL NOT NULL DEFAULT 0"
+                )
 
     def log_order(self, order: Order, event: str = "placed") -> None:
         """Log an order event."""
@@ -139,8 +151,9 @@ class TradeLogger:
                 conn.execute("""
                     INSERT INTO signal_meta
                         (order_id, pair, signal_type, timeframe, direction,
-                         quality_score, confluence_level, entry_price, stop_loss, take_profit)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         quality_score, confluence_level, entry_price, stop_loss,
+                         take_profit, risk_amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(order_id) DO UPDATE SET
                         pair = excluded.pair,
                         signal_type = excluded.signal_type,
@@ -150,7 +163,8 @@ class TradeLogger:
                         confluence_level = excluded.confluence_level,
                         entry_price = excluded.entry_price,
                         stop_loss = excluded.stop_loss,
-                        take_profit = excluded.take_profit
+                        take_profit = excluded.take_profit,
+                        risk_amount = excluded.risk_amount
                 """, (
                     order_id,
                     meta.get("pair", ""),
@@ -162,6 +176,7 @@ class TradeLogger:
                     meta.get("entry_price", 0.0),
                     meta.get("stop_loss", 0.0),
                     meta.get("take_profit", 0.0),
+                    meta.get("risk_amount", 0.0),
                 ))
             return True
         except Exception as e:

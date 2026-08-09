@@ -1,5 +1,7 @@
 """Tests for broker infrastructure (broker_base, order_manager, trade_logger)."""
 
+import sqlite3
+
 import pytest
 import pandas as pd
 
@@ -262,3 +264,68 @@ class TestTradeLogger:
             logger.log_order(order)
         history = logger.get_trade_history(limit=5)
         assert len(history) == 5
+
+
+class TestSignalMetaPersistence:
+    """Signal metadata must survive the weekly restart intact.
+
+    A trade sized at one risk setting and closed after a restart at another
+    silently gets the wrong dollar risk, which corrupts its R-multiple.
+    """
+
+    SIGNAL_META = {
+        "pair": "GBP_USD", "signal_type": "buildup", "timeframe": "H1",
+        "direction": "buy", "quality_score": 71.0, "confluence_level": 4,
+        "entry_price": 1.36100, "stop_loss": 1.35767, "take_profit": 1.36704,
+        "risk_amount": 1520.44,
+    }
+
+    def test_risk_amount_survives_restart(self, tmp_path):
+        db = tmp_path / "trades.db"
+        TradeLogger(db_path=db).save_signal_meta("1721", self.SIGNAL_META)
+        restored = TradeLogger(db_path=db).load_pending_signal_meta()
+        assert restored["1721"]["risk_amount"] == 1520.44
+
+    def test_legacy_table_gains_the_column(self, tmp_path):
+        db = tmp_path / "legacy.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("""
+                CREATE TABLE signal_meta (
+                    order_id TEXT PRIMARY KEY, pair TEXT NOT NULL,
+                    signal_type TEXT NOT NULL, timeframe TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    quality_score REAL NOT NULL DEFAULT 0,
+                    confluence_level REAL NOT NULL DEFAULT 0,
+                    entry_price REAL NOT NULL DEFAULT 0,
+                    stop_loss REAL NOT NULL DEFAULT 0,
+                    take_profit REAL NOT NULL DEFAULT 0
+                )
+            """)
+            conn.execute(
+                "INSERT INTO signal_meta VALUES "
+                "('1721','GBP_USD','buildup','H1','buy',71,4,1.361,1.35767,1.36704)"
+            )
+        TradeLogger(db_path=db).save_signal_meta("1722", self.SIGNAL_META)
+        assert TradeLogger(db_path=db).load_pending_signal_meta()["1722"]["risk_amount"] == 1520.44
+
+    def test_legacy_row_is_preserved_by_migration(self, tmp_path):
+        db = tmp_path / "legacy.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("""
+                CREATE TABLE signal_meta (
+                    order_id TEXT PRIMARY KEY, pair TEXT NOT NULL,
+                    signal_type TEXT NOT NULL, timeframe TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    quality_score REAL NOT NULL DEFAULT 0,
+                    confluence_level REAL NOT NULL DEFAULT 0,
+                    entry_price REAL NOT NULL DEFAULT 0,
+                    stop_loss REAL NOT NULL DEFAULT 0,
+                    take_profit REAL NOT NULL DEFAULT 0
+                )
+            """)
+            conn.execute(
+                "INSERT INTO signal_meta VALUES "
+                "('1721','GBP_USD','buildup','H1','buy',71,4,1.361,1.35767,1.36704)"
+            )
+        restored = TradeLogger(db_path=db).load_pending_signal_meta()
+        assert restored["1721"]["pair"] == "GBP_USD"
