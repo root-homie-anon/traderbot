@@ -62,7 +62,13 @@ def main():
         "--risk",
         type=float,
         default=None,
-        help="Risk fraction per trade override (e.g. 0.005 = 0.5%). Defaults to config RISK_PER_TRADE.",
+        help="Risk fraction per trade override (e.g. 0.005 = 0.5%%). Defaults to config RISK_PER_TRADE.",
+    )
+    parser.add_argument(
+        "--self-corrector",
+        action="store_true",
+        help="Enable the self-corrector, which suspends signal types on poor "
+             "performance (default: off)",
     )
     args = parser.parse_args()
 
@@ -112,6 +118,7 @@ def _run_paper(args):
         max_open_trades=args.max_trades,
         poll_interval=args.poll_interval,
         max_cycles=args.max_cycles,
+        use_self_corrector=args.self_corrector,
     )
 
     if args.pairs:

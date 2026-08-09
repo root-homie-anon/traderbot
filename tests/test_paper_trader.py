@@ -1,5 +1,7 @@
 """Tests for OANDA connector and paper trading engine."""
 
+from datetime import datetime
+
 import pytest
 import pandas as pd
 import numpy as np
@@ -133,11 +135,12 @@ class TestOandaConnector:
 # ──────────────── PaperTrader tests ────────────────
 
 
-class TestPaperTrader:
+@pytest.fixture
+def mock_connector():
+    return MockOandaConnector()
 
-    @pytest.fixture
-    def mock_connector(self):
-        return MockOandaConnector()
+
+class TestPaperTrader:
 
     @pytest.fixture
     def trader(self, mock_connector, tmp_path):
@@ -193,8 +196,8 @@ class TestPaperTrader:
         status = trader.get_status()
         assert "GBP_USD" in status["active_pairs"]
 
-    def test_with_learning_enabled(self, mock_connector):
-        config = PaperTraderConfig(
+    def _learning_config(self, **overrides):
+        return PaperTraderConfig(
             pairs=["EUR_USD"],
             timeframes=["H1"],
             max_cycles=1,
@@ -202,11 +205,30 @@ class TestPaperTrader:
             use_learning=True,
             auto_pair_selection=False,
             use_session_filter=False,
+            **overrides,
         )
-        trader = PaperTrader(config=config, connector=mock_connector)
+
+    def test_with_learning_enabled(self, mock_connector):
+        trader = PaperTrader(config=self._learning_config(), connector=mock_connector)
         trader.start()
         assert trader.adaptive is not None
+
+    def test_corrector_off_by_default(self, mock_connector):
+        trader = PaperTrader(config=self._learning_config(), connector=mock_connector)
+        trader.start()
+        assert trader.corrector is None
+
+    def test_corrector_enabled_by_flag(self, mock_connector):
+        config = self._learning_config(use_self_corrector=True)
+        trader = PaperTrader(config=config, connector=mock_connector)
+        trader.start()
         assert trader.corrector is not None
+
+    def test_all_signal_types_active_without_corrector(self, mock_connector):
+        trader = PaperTrader(config=self._learning_config(), connector=mock_connector)
+        trader.start()
+        assert trader._get_enabled_signal_types() == trader.config.signal_types
+
 
     def test_stop_method(self, mock_connector):
         config = PaperTraderConfig(
@@ -220,6 +242,63 @@ class TestPaperTrader:
         trader.config.max_cycles = 1
         trader.start()
         assert trader.state.cycles == 1
+
+
+class TestWeekendFlatten:
+    """Positions must not be carried across the weekend gap."""
+
+    @pytest.fixture
+    def trader(self, mock_connector):
+        return PaperTrader(
+            config=PaperTraderConfig(max_cycles=1, poll_interval=0),
+            connector=mock_connector,
+        )
+
+    def test_friday_after_cutoff_is_in_window(self, trader):
+        assert trader._is_weekend_cutoff(datetime(2026, 5, 29, 16, 45))
+
+    def test_friday_before_cutoff_is_not(self, trader):
+        assert not trader._is_weekend_cutoff(datetime(2026, 5, 29, 16, 44))
+
+    def test_other_weekdays_are_not(self, trader):
+        assert not trader._is_weekend_cutoff(datetime(2026, 5, 28, 23, 59))
+
+    def test_flatten_closes_every_open_position(self, trader, mock_connector):
+        trader.start()
+        trader.order_mgr.open_orders = {
+            "1721": Order(
+                order_id="1721", pair="GBP_USD", side=OrderSide.BUY,
+                order_type=OrderType.MARKET, units=1000,
+                status=OrderStatus.FILLED,
+            ),
+            "1869": Order(
+                order_id="1869", pair="EUR_USD", side=OrderSide.SELL,
+                order_type=OrderType.MARKET, units=1000,
+                status=OrderStatus.FILLED,
+            ),
+        }
+        closed = []
+        mock_connector.close_trade = lambda oid: closed.append(oid)
+
+        trader._flatten_open_positions()
+
+        assert closed == ["1721", "1869"]
+
+    def test_flatten_leaves_reconciliation_to_record_the_trade(self, trader, mock_connector):
+        """Closing must not drop the order locally, or it is never recorded."""
+        trader.start()
+        trader.order_mgr.open_orders = {
+            "1721": Order(
+                order_id="1721", pair="GBP_USD", side=OrderSide.BUY,
+                order_type=OrderType.MARKET, units=1000,
+                status=OrderStatus.FILLED,
+            ),
+        }
+        mock_connector.close_trade = lambda oid: None
+
+        trader._flatten_open_positions()
+
+        assert "1721" in trader.order_mgr.open_orders
 
 
 class TestPaperTraderConfig:
