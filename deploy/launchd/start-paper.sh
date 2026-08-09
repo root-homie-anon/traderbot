@@ -14,11 +14,17 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
-# Export all vars from .env (skip blank lines and comments)
-set -o allexport
-# shellcheck source=/dev/null
-source "${ENV_FILE}"
-set +o allexport
+# Export vars from .env line by line. keymaster syncs shared keys from other
+# projects into this file, and a key name that isn't a valid shell identifier
+# (e.g. hyphenated) kills a plain `source` under set -e — skip those instead.
+while IFS= read -r line; do
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    if [[ "${line}" =~ '^[A-Za-z_][A-Za-z0-9_]*=' ]]; then
+        export "${line}"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: skipping invalid .env line (key: ${line%%=*})" >&2
+    fi
+done < "${ENV_FILE}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] .env loaded, launching bot..."
 
