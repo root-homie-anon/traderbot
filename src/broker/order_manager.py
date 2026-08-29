@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from src.broker.broker_base import (
     BrokerBase, Order, OrderSide, OrderType, OrderStatus,
 )
-from src.risk.position_sizer import calculate_position_size
+from src.risk.position_sizer import calculate_position_size, quote_to_account_rate
 from src.risk.daily_limits import DailyLimitTracker
 from src.risk.drawdown_manager import DrawdownManager
 from src.risk.stop_validator import validate_stop
@@ -65,6 +65,27 @@ class OrderManager:
         self.correlation_guard = CorrelationGuard(max_correlated=2)
 
         self.open_orders: dict[str, Order] = {}
+        # Cache of QUOTE→USD rates for cross pairs, refreshed per call to keep stale data out
+        self._cross_rate_cache: dict[str, float] = {}
+
+    def _cross_quote_rate(self, quote_currency: str) -> float:
+        """For a non-USD-quoted cross pair, fetch USD_<quote> mid and return 1/mid.
+
+        Returns 0.0 if the broker can't price USD_<quote>.
+        """
+        if quote_currency == "USD":
+            return 1.0
+        cross = f"USD_{quote_currency}"
+        try:
+            mid = self.broker.get_mid_price(cross)
+        except Exception as e:
+            logger.warning("get_mid_price(%s) failed: %s", cross, e)
+            return 0.0
+        if mid <= 0:
+            return 0.0
+        rate = 1.0 / mid
+        self._cross_rate_cache[quote_currency] = rate
+        return rate
 
     def submit_signal(self, signal: Signal) -> OrderResult:
         """Validate and place an order from a trading signal."""
@@ -117,7 +138,18 @@ class OrderManager:
             logger.warning("Rejecting order for %s — %s", signal.pair, reason)
             return OrderResult(success=False, reason=reason)
 
-        # Position sizing
+        # Position sizing — needs quote→account FX conversion for non-USD-quoted pairs
+        rate = quote_to_account_rate(signal.pair, signal.entry_price)
+        if rate is None:
+            # Cross pair: fetch USD_<quote> mid-price from broker
+            _, _, quote = signal.pair.partition("_")
+            cross_rate = self._cross_quote_rate(quote)
+            if cross_rate <= 0:
+                reason = f"cannot price cross {signal.pair} (no USD_{quote} feed)"
+                logger.warning("Rejecting order for %s — %s", signal.pair, reason)
+                return OrderResult(success=False, reason=reason)
+            rate = cross_rate
+
         risk_mult = (
             self.drawdown_mgr.risk_multiplier()
             if self.use_drawdown_scaling
@@ -129,6 +161,7 @@ class OrderManager:
             stop_loss=signal.stop_loss,
             risk_pct=self.risk_per_trade * risk_mult,
             pip_value=pip_value,
+            quote_to_account_rate=rate,
         )
 
         if sizing["position_size"] <= 0:

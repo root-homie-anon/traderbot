@@ -4,7 +4,7 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from src.risk.position_sizer import calculate_position_size
+from src.risk.position_sizer import calculate_position_size, quote_to_account_rate
 from src.risk.stop_validator import validate_stop
 from src.risk.daily_limits import DailyLimitTracker
 from src.risk.drawdown_manager import DrawdownManager
@@ -36,6 +36,100 @@ class TestPositionSizer:
         wide = calculate_position_size(300, 1.1, 1.09, 0.01)
         tight = calculate_position_size(300, 1.1, 1.095, 0.01)
         assert tight["position_size"] > wide["position_size"]
+
+
+class TestQuoteToAccountRate:
+    def test_usd_quoted_pair_returns_one(self):
+        assert quote_to_account_rate("EUR_USD", 1.10) == 1.0
+        assert quote_to_account_rate("GBP_USD", 1.27) == 1.0
+        assert quote_to_account_rate("AUD_USD", 0.65) == 1.0
+
+    def test_usd_base_pair_returns_inverse_price(self):
+        assert quote_to_account_rate("USD_JPY", 159.0) == pytest.approx(1 / 159.0)
+        assert quote_to_account_rate("USD_CAD", 1.367) == pytest.approx(1 / 1.367)
+
+    def test_cross_pair_returns_none(self):
+        assert quote_to_account_rate("EUR_GBP", 0.86) is None
+        assert quote_to_account_rate("EUR_JPY", 170.0) is None
+        assert quote_to_account_rate("GBP_JPY", 200.0) is None
+
+    def test_malformed_pair_raises(self):
+        with pytest.raises(ValueError):
+            quote_to_account_rate("EURUSD", 1.10)
+
+    def test_zero_entry_price_raises_for_usd_base(self):
+        with pytest.raises(ValueError):
+            quote_to_account_rate("USD_JPY", 0)
+
+
+class TestPositionSizingAcrossPairs:
+    """Verify the size produced gives the intended dollar risk on a stop-out."""
+
+    def _expected_loss_in_account(self, size: int, stop_distance: float, rate: float) -> float:
+        return size * stop_distance * rate
+
+    def test_eur_usd_unchanged_behavior(self):
+        """USD-quoted: rate=1.0, formula reduces to old behavior."""
+        result = calculate_position_size(
+            account_balance=80_000, entry_price=1.10, stop_loss=1.0950,
+            risk_pct=0.02, quote_to_account_rate=1.0,
+        )
+        loss = self._expected_loss_in_account(
+            result["position_size"], 0.005, 1.0,
+        )
+        assert loss == pytest.approx(1600, rel=0.001)
+
+    def test_usd_jpy_sizes_correctly(self):
+        """USD/JPY at 159, 10-pip stop, 2% of $80k account → expect ~$1600 loss on stop."""
+        rate = quote_to_account_rate("USD_JPY", 159.0)
+        result = calculate_position_size(
+            account_balance=80_000, entry_price=159.0, stop_loss=159.10,
+            risk_pct=0.02, pip_value=0.01, quote_to_account_rate=rate,
+        )
+        loss = self._expected_loss_in_account(result["position_size"], 0.10, rate)
+        assert loss == pytest.approx(1600, rel=0.001)
+
+    def test_usd_cad_sizes_correctly(self):
+        """USD/CAD at 1.367, ~9.4 pip stop → 2% of $80k → expect ~$1600 loss on stop."""
+        rate = quote_to_account_rate("USD_CAD", 1.367)
+        stop_distance = 0.000940
+        result = calculate_position_size(
+            account_balance=80_000, entry_price=1.36657,
+            stop_loss=1.36657 + stop_distance,
+            risk_pct=0.02, pip_value=0.0001, quote_to_account_rate=rate,
+        )
+        loss = self._expected_loss_in_account(
+            result["position_size"], stop_distance, rate,
+        )
+        assert loss == pytest.approx(1600, rel=0.005)
+
+    def test_eur_jpy_with_external_rate(self):
+        """Cross pair: caller supplies USD_JPY-derived rate."""
+        # USD_JPY mid = 159.0 → JPY→USD rate = 1/159
+        external_rate = 1 / 159.0
+        result = calculate_position_size(
+            account_balance=80_000, entry_price=170.0, stop_loss=170.20,
+            risk_pct=0.02, pip_value=0.01, quote_to_account_rate=external_rate,
+        )
+        loss = self._expected_loss_in_account(
+            result["position_size"], 0.20, external_rate,
+        )
+        assert loss == pytest.approx(1600, rel=0.001)
+
+    def test_jpy_pair_old_formula_undersized_by_price_factor(self):
+        """Regression guard: confirm the old buggy formula was off by ~entry_price."""
+        rate = quote_to_account_rate("USD_JPY", 159.0)
+        new_result = calculate_position_size(
+            account_balance=80_000, entry_price=159.0, stop_loss=159.10,
+            risk_pct=0.02, pip_value=0.01, quote_to_account_rate=rate,
+        )
+        # Old formula = rate=1.0 (assumed quote = account)
+        old_result = calculate_position_size(
+            account_balance=80_000, entry_price=159.0, stop_loss=159.10,
+            risk_pct=0.02, pip_value=0.01, quote_to_account_rate=1.0,
+        )
+        ratio = new_result["position_size"] / old_result["position_size"]
+        assert ratio == pytest.approx(159.0, rel=0.001)
 
 
 class TestStopValidator:

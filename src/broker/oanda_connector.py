@@ -317,18 +317,36 @@ class OandaConnector(BrokerBase):
 
     def get_spread(self, pair: str) -> float:
         """Get current spread by fetching pricing."""
-        resp = self._request(
-            "GET",
-            f"/v3/accounts/{self.account_id}/pricing",
-            params={"instruments": pair},
-        )
+        ask, bid = self._fetch_top_of_book(pair)
+        if ask is None:
+            return 0.00015  # fallback
+        return ask - bid
+
+    def get_mid_price(self, pair: str) -> float:
+        """Current mid price (ask+bid)/2. Returns 0.0 if pricing unavailable."""
+        ask, bid = self._fetch_top_of_book(pair)
+        if ask is None:
+            return 0.0
+        return (ask + bid) / 2.0
+
+    def _fetch_top_of_book(self, pair: str):
+        """Return (ask, bid) tuple, or (None, None) on failure."""
+        try:
+            resp = self._request(
+                "GET",
+                f"/v3/accounts/{self.account_id}/pricing",
+                params={"instruments": pair},
+            )
+        except Exception:
+            return None, None
         prices = resp.get("prices", [])
         if not prices:
-            return 0.00015  # fallback
+            return None, None
         p = prices[0]
-        ask = float(p["asks"][0]["price"])
-        bid = float(p["bids"][0]["price"])
-        return ask - bid
+        try:
+            return float(p["asks"][0]["price"]), float(p["bids"][0]["price"])
+        except (KeyError, IndexError, ValueError):
+            return None, None
 
     def _reset_session(self) -> None:
         """Close and rebuild the HTTP session to discard stale pooled connections."""

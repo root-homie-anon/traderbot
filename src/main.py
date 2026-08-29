@@ -58,6 +58,18 @@ def main():
         default=0,
         help="Stop after N cycles, 0 = run forever (default: 0)",
     )
+    parser.add_argument(
+        "--risk",
+        type=float,
+        default=None,
+        help="Risk fraction per trade override (e.g. 0.005 = 0.5%%). Defaults to config RISK_PER_TRADE.",
+    )
+    parser.add_argument(
+        "--self-corrector",
+        action="store_true",
+        help="Enable the self-corrector, which suspends signal types on poor "
+             "performance (default: off)",
+    )
     args = parser.parse_args()
 
     logger.info(f"Starting bot in {args.mode} mode")
@@ -106,6 +118,7 @@ def _run_paper(args):
         max_open_trades=args.max_trades,
         poll_interval=args.poll_interval,
         max_cycles=args.max_cycles,
+        use_self_corrector=args.self_corrector,
     )
 
     if args.pairs:
@@ -117,6 +130,12 @@ def _run_paper(args):
         config.pairs = args.pairs
     if args.timeframes:
         config.timeframes = args.timeframes
+    if args.risk is not None:
+        if not (0 < args.risk <= 0.05):
+            logger.error("Invalid --risk %s (must be in (0, 0.05])", args.risk)
+            return
+        config.risk_per_trade = args.risk
+        logger.info("Risk override: %.3f%%", args.risk * 100)
 
     trader = PaperTrader(config=config)
 

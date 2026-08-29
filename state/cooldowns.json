@@ -1,0 +1,56 @@
+{
+  "AUD_USD|buildup|sell": {
+    "direction": "sell",
+    "locked_at": "2026-05-28T09:14:43.322856",
+    "pair": "AUD_USD",
+    "signal_type": "buildup",
+    "timeframe": "H1",
+    "triggering_order_id": "1885",
+    "unlock_at": "2026-05-28T13:14:43.322856"
+  },
+  "EUR_USD|buildup|sell": {
+    "direction": "sell",
+    "locked_at": "2026-05-31T17:05:07.415717",
+    "pair": "EUR_USD",
+    "signal_type": "buildup",
+    "timeframe": "H1",
+    "triggering_order_id": "1869",
+    "unlock_at": "2026-05-31T21:05:07.415717"
+  },
+  "GBP_USD|buildup|buy": {
+    "direction": "buy",
+    "locked_at": "2026-05-12T06:03:28.207918",
+    "pair": "GBP_USD",
+    "signal_type": "buildup",
+    "timeframe": "H1",
+    "triggering_order_id": "1721",
+    "unlock_at": "2026-05-12T10:03:28.207918"
+  },
+  "GBP_USD|buildup|sell": {
+    "direction": "sell",
+    "locked_at": "2026-05-22T23:18:57.531047",
+    "pair": "GBP_USD",
+    "signal_type": "buildup",
+    "timeframe": "H1",
+    "triggering_order_id": "1843",
+    "unlock_at": "2026-05-23T03:18:57.531047"
+  },
+  "NZD_USD|buildup|buy": {
+    "direction": "buy",
+    "locked_at": "2026-06-01T08:44:54.747426",
+    "pair": "NZD_USD",
+    "signal_type": "buildup",
+    "timeframe": "H1",
+    "triggering_order_id": "1891",
+    "unlock_at": "2026-06-01T12:44:54.747426"
+  },
+  "NZD_USD|buildup|sell": {
+    "direction": "sell",
+    "locked_at": "2026-05-26T21:03:35.540561",
+    "pair": "NZD_USD",
+    "signal_type": "buildup",
+    "timeframe": "H1",
+    "triggering_order_id": "1878",
+    "unlock_at": "2026-05-27T01:03:35.540561"
+  }
+}

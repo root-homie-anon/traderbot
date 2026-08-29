@@ -18,6 +18,7 @@ from src.learning.performance_tracker import PerformanceTracker
 from src.learning.adaptive_engine import AdaptiveEngine
 from src.learning.self_corrector import SelfCorrector, ActionType
 from src.learning.pair_selector import PairSelector
+from src.learning.cooldown import CooldownGuard
 from src.signals.signal_base import Signal, SignalDirection
 from src.signals.reversal_signal import detect_reversal_signals
 from src.signals.pullback_signal import detect_pullback_signals
@@ -35,6 +36,7 @@ from src.data.cot_data import COTAnalyzer
 from src.trading_sessions import get_tradeable_pairs, get_session_name
 from src.utils.formatters import format_pnl, format_pct
 from src.utils.helpers import get_pip_value
+from pathlib import Path
 from src.config import (
     RISK_PER_TRADE, QUALITY_SCORE_MIN, CONFLUENCE_MIN, TIMEFRAMES, TOP_PAIRS, DATA_DIR,
 )
@@ -62,6 +64,13 @@ POLL_INTERVALS = {
     "D": 600,         # check every 10 min
 }
 
+# A resting stop does not bound a weekend gap — it fills at whatever price the
+# Sunday reopen offers, so a 1R stop can realize several R. Close out ahead of
+# the Friday 17:00 launchd stop, leaving enough cycles to retry a failed close.
+WEEKEND_FLATTEN_WEEKDAY = 4  # Monday = 0
+WEEKEND_FLATTEN_HOUR = 16
+WEEKEND_FLATTEN_MINUTE = 45
+
 
 @dataclass
 class PaperTraderConfig:
@@ -84,6 +93,11 @@ class PaperTraderConfig:
     auto_pair_selection: bool = True
     use_learning: bool = True
     use_session_filter: bool = True
+    flatten_before_weekend: bool = True
+    # Off by default: the corrector adapts on 5-trade windows, which is noise at
+    # the sample sizes this bot has produced. Re-enable once there is a track
+    # record long enough for its thresholds to mean something.
+    use_self_corrector: bool = False
 
 
 @dataclass
@@ -136,6 +150,9 @@ class PaperTrader:
         self._running = False
         # Map order_id -> signal metadata for recording closed trades
         self._signal_meta: dict[str, dict] = {}
+        # Re-entry cooldown: locks (pair, signal_type, direction) after a stop-out
+        self.cooldown_guard = CooldownGuard(state_path=Path("state/cooldowns.json"))
+        self.cooldown_guard.load()
 
     def start(self) -> None:
         """Connect and run the paper trading loop."""
@@ -183,7 +200,13 @@ class PaperTrader:
         self.trade_logger = TradeLogger()
         self.perf_tracker = PerformanceTracker()
         self.adaptive = AdaptiveEngine(self.perf_tracker) if self.config.use_learning else None
-        self.corrector = SelfCorrector(self.perf_tracker) if self.config.use_learning else None
+        self.corrector = (
+            SelfCorrector(self.perf_tracker)
+            if self.config.use_learning and self.config.use_self_corrector
+            else None
+        )
+        if not self.corrector:
+            logger.info("Self-corrector disabled — all signal types stay enabled")
         self.pair_selector = PairSelector(
             self.perf_tracker, max_pairs=TOP_PAIRS
         ) if self.config.auto_pair_selection else None
@@ -351,6 +374,12 @@ class PaperTrader:
         # Sync open trades and record any that closed
         self._check_closed_trades()
 
+        # Once inside the pre-weekend window, close out and stop looking for
+        # entries — a position opened here could only be held over the gap.
+        if self.config.flatten_before_weekend and self._is_weekend_cutoff():
+            self._flatten_open_positions()
+            return
+
         # Resolve current session once per cycle so all downstream calls agree
         current_session = get_session_name()
 
@@ -509,6 +538,18 @@ class PaperTrader:
                 signal.quality_score *= 1.0 + (cot_strength / 100) * 0.10
 
             if signal.quality_score >= self.config.min_quality_score:
+                locked, unlock_at = self.cooldown_guard.is_locked(
+                    signal.pair, signal.signal_type.value, signal.direction.value,
+                )
+                if locked:
+                    logger.info(
+                        "COOLDOWN SKIP: %s %s %s locked until %s",
+                        signal.pair, signal.signal_type.value,
+                        signal.direction.value,
+                        unlock_at.isoformat(timespec="minutes") if unlock_at else "?",
+                    )
+                    self.state.orders_rejected += 1
+                    continue
                 scored.append(signal)
 
         self.state.signals_generated += len(scored)
@@ -608,11 +649,18 @@ class PaperTrader:
         exit_reason = details["exit_reason"]
 
         self.state.total_pnl += realized_pnl
-        # Use the dollar risk stored at order placement time; fall back to
-        # balance * risk_pct if metadata predates the fix.
-        risk_amount = meta.get("risk_amount") or (
-            self.order_mgr.balance * self.config.risk_per_trade
-        )
+        # Use the dollar risk stored at order placement time. The fallback is
+        # only correct if the risk setting has not changed since placement, so
+        # it is worth a warning: an R-multiple derived from it is not comparable
+        # with the rest of the history.
+        risk_amount = meta.get("risk_amount") or 0.0
+        if not risk_amount:
+            risk_amount = self.order_mgr.balance * self.config.risk_per_trade
+            logger.warning(
+                "Trade %s (%s) has no stored risk amount — deriving %.2f from the "
+                "current %.3f%% setting; its R-multiple may be wrong",
+                oid, meta["pair"], risk_amount, self.config.risk_per_trade * 100,
+            )
 
         self.perf_tracker.record_trade({
             "timestamp": datetime.now().isoformat(),
@@ -653,7 +701,54 @@ class PaperTrader:
             meta["direction"].upper(), meta["pair"],
             exit_price, realized_pnl, exit_reason,
         )
+
+        if exit_reason == "stop_loss":
+            self.cooldown_guard.register_stopout(
+                pair=meta["pair"],
+                signal_type=meta["signal_type"],
+                direction=meta["direction"],
+                timeframe=meta.get("timeframe", "H1"),
+                order_id=oid,
+            )
+
         self._log_progress()
+
+    def _is_weekend_cutoff(self, now: datetime | None = None) -> bool:
+        """True once the pre-weekend flatten window has opened."""
+        now = now or datetime.now()
+        if now.weekday() != WEEKEND_FLATTEN_WEEKDAY:
+            return False
+        cutoff = now.replace(
+            hour=WEEKEND_FLATTEN_HOUR,
+            minute=WEEKEND_FLATTEN_MINUTE,
+            second=0,
+            microsecond=0,
+        )
+        return now >= cutoff
+
+    def _flatten_open_positions(self) -> None:
+        """Close every open position ahead of the weekend.
+
+        Closes at the broker and leaves reconciliation to ``_check_closed_trades``
+        so the trade is recorded through the same authoritative path as an
+        SL/TP exit, rather than from a locally cached snapshot.
+        """
+        open_ids = list(self.order_mgr.open_orders.keys())
+        if not open_ids:
+            return
+
+        logger.info(
+            "Pre-weekend flatten: closing %d open position(s)", len(open_ids),
+        )
+        for oid in open_ids:
+            try:
+                self.connector.close_trade(oid)
+                logger.info("Pre-weekend flatten: closed trade %s", oid)
+            except Exception as e:
+                logger.warning(
+                    "Pre-weekend flatten: failed to close trade %s: %s — "
+                    "will retry next cycle", oid, e,
+                )
 
     def _check_closed_trades(self) -> None:
         """Detect trades closed by SL/TP since last sync and record them."""

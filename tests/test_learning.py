@@ -3,11 +3,29 @@
 import pytest
 import tempfile
 import os
+from datetime import datetime, timedelta
 
 from src.learning.performance_tracker import PerformanceTracker, SetupStats
 from src.learning.adaptive_engine import AdaptiveEngine
 from src.learning.self_corrector import SelfCorrector, ActionType
 from src.learning.pair_selector import PairSelector
+
+# Trades built by _make_trade are stamped 2026-01-01; a clock before that makes
+# them count as "new" for streak checks, one after that makes them stale.
+TRADE_TIME = datetime(2026, 1, 1)
+
+
+class _FakeClock:
+    """Controllable stand-in for datetime.now."""
+
+    def __init__(self, now: datetime):
+        self._now = now
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, **kwargs) -> None:
+        self._now += timedelta(**kwargs)
 
 
 def _make_trade(pair="EUR_USD", signal_type="reversal", timeframe="H1",
@@ -306,6 +324,94 @@ class TestSelfCorrector:
         corrections = corrector.evaluate(signal_types=["bos"])
         actions = [c.action for c in corrections]
         assert ActionType.RE_ENABLE_SIGNAL in actions
+
+
+class TestDisableProbation:
+    """A disable must be a suspension, never a one-way door."""
+
+    def _disable(self, tracker, clock):
+        """Seed a losing streak and disable 'bos' through the normal path."""
+        for _ in range(5):
+            tracker.record_trade(
+                _make_trade(signal_type="bos", pnl=-1.0, exit_reason="stop_loss")
+            )
+        corrector = SelfCorrector(tracker, clock=clock)
+        for correction in corrector.evaluate(signal_types=["bos"]):
+            corrector.apply_correction(correction)
+        return corrector
+
+    def test_consecutive_losses_disable_signal(self, tracker):
+        clock = _FakeClock(TRADE_TIME - timedelta(days=10))
+        corrector = self._disable(tracker, clock)
+        assert not corrector.is_signal_enabled("bos")
+
+    def test_disable_holds_during_probation(self, tracker):
+        clock = _FakeClock(TRADE_TIME - timedelta(days=10))
+        corrector = self._disable(tracker, clock)
+        clock.advance(hours=100)  # short of the 168h term
+        for correction in corrector.evaluate(signal_types=["bos"]):
+            corrector.apply_correction(correction)
+        assert not corrector.is_signal_enabled("bos")
+
+    def test_disable_lapses_after_probation(self, tracker):
+        clock = _FakeClock(TRADE_TIME - timedelta(days=10))
+        corrector = self._disable(tracker, clock)
+        clock.advance(hours=169)
+        for correction in corrector.evaluate(signal_types=["bos"]):
+            corrector.apply_correction(correction)
+        assert corrector.is_signal_enabled("bos")
+
+    def test_re_enabled_signal_survives_the_next_cycle(self, tracker):
+        """The streak that caused the disable must not re-trigger it."""
+        clock = _FakeClock(TRADE_TIME - timedelta(days=10))
+        corrector = self._disable(tracker, clock)
+        clock.advance(days=60)  # past probation and past the trades' timestamps
+        for correction in corrector.evaluate(signal_types=["bos"]):
+            corrector.apply_correction(correction)
+
+        for correction in corrector.evaluate(signal_types=["bos"]):
+            corrector.apply_correction(correction)
+
+        assert corrector.is_signal_enabled("bos")
+
+    def test_stale_streak_does_not_disable_on_startup(self, tracker):
+        """History from before this run cannot disable a signal it never traded."""
+        for _ in range(5):
+            tracker.record_trade(
+                _make_trade(signal_type="bos", pnl=-1.0, exit_reason="stop_loss")
+            )
+        corrector = SelfCorrector(tracker, clock=_FakeClock(TRADE_TIME + timedelta(days=30)))
+        actions = [c.action for c in corrector.evaluate(signal_types=["bos"])]
+        assert ActionType.DISABLE_SIGNAL not in actions
+
+    def test_stale_pair_streak_stops_emitting_corrections(self, tracker):
+        """A frozen pair streak must not re-fire every cycle forever."""
+        for _ in range(5):
+            tracker.record_trade(
+                _make_trade(pair="USD_CAD", pnl=-1.0, exit_reason="stop_loss")
+            )
+        corrector = SelfCorrector(tracker, clock=_FakeClock(TRADE_TIME + timedelta(days=30)))
+        actions = [
+            c.action for c in corrector.evaluate(pairs=["USD_CAD"], signal_types=[])
+        ]
+        assert ActionType.REDUCE_RISK not in actions
+
+    def test_pair_risk_reduction_fires_once_per_streak(self, tracker):
+        """A live streak must not re-emit the same verdict every cycle."""
+        for _ in range(5):
+            tracker.record_trade(
+                _make_trade(pair="USD_CAD", pnl=-1.0, exit_reason="stop_loss")
+            )
+        clock = _FakeClock(TRADE_TIME - timedelta(days=10))
+        corrector = SelfCorrector(tracker, clock=clock)
+        for correction in corrector.evaluate(pairs=["USD_CAD"], signal_types=[]):
+            corrector.apply_correction(correction)
+
+        clock.advance(minutes=2)  # the next scan cycle
+        actions = [
+            c.action for c in corrector.evaluate(pairs=["USD_CAD"], signal_types=[])
+        ]
+        assert ActionType.REDUCE_RISK not in actions
 
 
 # ──────────────────── PairSelector ────────────────────
